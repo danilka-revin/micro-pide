@@ -97,7 +97,7 @@ export interface EditorOpts {
  * идёт через dispatch без потери истории отмены.
  */
 export function CodeEditor({
-  value, path, onChange, opts, onSave, onVerify, onUpload, onReady,
+  value, path, onChange, opts, onSave, onVerify, onUpload, onReady, goto,
 }: {
   value: string;
   path: string;
@@ -107,6 +107,8 @@ export function CodeEditor({
   onVerify?: () => void;
   onUpload?: () => void;
   onReady?: (view: EditorView | null) => void;
+  /** Перейти к строке (используют панели «Анализ» и «История»). */
+  goto?: { file: string; line: number; token: number } | null;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -115,6 +117,18 @@ export function CodeEditor({
   const fsComp = useRef(new Compartment());
   const cbRef = useRef({ onChange, onSave, onVerify, onUpload, onReady });
   cbRef.current = { onChange, onSave, onVerify, onUpload, onReady };
+
+  // переход к строке по запросу панелей (анализ, история, тесты)
+  useEffect(() => {
+    const v = view.current;
+    if (!v || !goto || goto.file !== path) return;
+    const total = v.state.doc.lines;
+    const line = Math.max(1, Math.min(total, goto.line));
+    const info = v.state.doc.line(line);
+    v.dispatch({ selection: { anchor: info.from }, scrollIntoView: true });
+    v.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [goto?.token, path]);
 
   // создать редактор один раз
   useEffect(() => {
