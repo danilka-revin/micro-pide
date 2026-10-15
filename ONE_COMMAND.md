@@ -17,7 +17,7 @@ git clone https://github.com/danilka-revin/micro-pide.git && cd micro-pide && ./
 ./install.sh --port 3000   # другой порт
 ./install.sh --no-avr      # не ставить AVR (Uno/Nano/Mega)
 ./install.sh --no-run      # только установить, не запускать
-./install.sh --desktop     # ярлык в меню приложений (Linux)
+./install.sh --no-desktop  # без ярлыка (по умолчанию — на рабочий стол и в меню приложений, Linux)
 ```
 
 ## Windows (cmd / PowerShell)

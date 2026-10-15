@@ -39,7 +39,7 @@ cd micro-pide
 ./install.sh --port 3000   # другой порт
 ./install.sh --no-avr      # не ставить платформу Arduino AVR (Uno/Nano/Mega)
 ./install.sh --no-run      # установить, но не запускать
-./install.sh --desktop     # добавить ярлык в меню приложений (Linux)
+./install.sh --no-desktop  # без ярлыка (по умолчанию ярлык ставится на рабочий стол и в меню приложений, Linux)
 ```
 
 ### Windows
