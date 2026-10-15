@@ -18,7 +18,10 @@
     "server": "node server/server.mjs",
     "test:server": "node test/server.mjs",
     "test:high": "node test/highlight.mjs",
-    "test": "npm run test:high && npm run test:server"
+    "test": "npm run test:high && npm run test:server",
+    "agent": "node scripts/agent.mjs",
+    "start:one": "bash ./run.sh",
+    "one": "bash ./run.sh"
   },
   "dependencies": {
     "react": "^18.3.1",

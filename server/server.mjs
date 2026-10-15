@@ -223,6 +223,52 @@ async function handleUpload(req, res, body) {
 
 // ---------------------------------------------------------------- маршруты API
 
+
+async function callLLM({ key, provider, task }) {
+  const prov = (provider || '').toLowerCase();
+  const isOpenAI = prov === 'openai' || (!prov && !process.env.ANTHROPIC_API_KEY && !process.env.GEMINI_API_KEY);
+  // detect by key prefix / env
+  let useAnthropic = prov === 'anthropic' || (!prov && !!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY);
+  let useGemini = prov === 'gemini' || prov === 'google' || (!prov && !!process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY && !process.env.ANTHROPIC_API_KEY);
+
+  if (prov === 'openai') useAnthropic = false; useGemini = false;
+  if (prov === 'anthropic') useAnthropic = true; useGemini = false;
+  if (prov === 'gemini' || prov === 'google') { useAnthropic = false; useGemini = true; }
+
+  const sys = 'Ты — ИИ-агент разработчика проекта MicroPIDE. Отвечай по-русски. Давай конкретный план и команды.';
+
+  if (useAnthropic) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: process.env.AI_MODEL || 'claude-3-5-sonnet-20241022', max_tokens: 2048, system: sys, messages: [{ role: 'user', content: task }] }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(JSON.stringify(j));
+    return (j.content || []).map((c) => c.text).join('');
+  }
+  if (useGemini) {
+    const model = process.env.AI_MODEL || 'gemini-1.5-flash';
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: sys + '\n\n' + task }] }] }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(JSON.stringify(j));
+    return j.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') || '';
+  }
+  // OpenAI (default)
+  const r = await fetch(process.env.AI_BASE_URL || 'https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({ model: process.env.AI_MODEL || 'gpt-4o-mini', messages: [{ role: 'system', content: sys }, { role: 'user', content: task }], temperature: 0.3 }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(JSON.stringify(j));
+  return j.choices?.[0]?.message?.content || '';
+}
+
 async function api(req, res, url) {
   const path = url.pathname;
   const q = url.searchParams;
@@ -435,6 +481,25 @@ async function api(req, res, url) {
       const r = renameSketch(String(body.from || ''), String(body.to || ''));
       return sendJson(res, 200, { ok: true, ...r });
     } catch (e) { return sendJson(res, 400, { ok: false, error: e?.message || String(e) }); }
+  }
+
+  // ---------- ИИ-агент ----------
+  if (req.method === 'GET' && (path === '/api/agent/status' || path === '/api/ai/status')) {
+    const hasKey = !!(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY);
+    return sendJson(res, 200, { ok: true, enabled: hasKey, agent: hasKey });
+  }
+  if (req.method === 'POST' && (path === '/api/agent' || path === '/api/ai' || path === '/api/agent/run')) {
+    const body = await readBody(req, 256 * 1024);
+    const key = String(body.key || body.apiKey || body.api_key || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY || '').trim();
+    const task = String(body.task || body.prompt || body.message || '').trim();
+    if (!key) return sendJson(res, 400, { ok: false, error: 'Не указан API-ключ (key)' });
+    if (!task) return sendJson(res, 400, { ok: false, error: 'Не указана задача (task)' });
+    try {
+      const reply = await callLLM({ key, provider: body.provider, task });
+      return sendJson(res, 200, { ok: true, reply, text: reply, answer: reply });
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: e?.message || String(e) });
+    }
   }
 
   return sendJson(res, 404, { ok: false, error: 'Нет такого API: ' + path });

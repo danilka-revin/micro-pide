@@ -66,6 +66,23 @@
 
 Windows: `install.cmd`. Подробный гайд — [INSTALL.md](INSTALL.md).
 
+### Запуск одной командой (гайд)
+
+Полный гайд — [ONE_COMMAND.md](ONE_COMMAND.md). Коротко:
+
+```bash
+git clone https://github.com/danilka-revin/micro-pide.git && cd micro-pide && ./install.sh
+```
+
+Windows: `git clone ... && cd micro-pide && install.cmd`. Уже установлено — `./run.sh`.
+
+### ИИ-агент (работает вместо вас)
+
+Подключите один API-ключ — и агент сам делает рутину. Подробности в
+[ONE_COMMAND.md](ONE_COMMAND.md) (раздел «ИИ-агент») и [AGENTS.md](AGENTS.md).
+Скрипт: `./agent.sh "задача"` (ключ в `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+`GEMINI_API_KEY`). API среды: `POST /api/agent`.
+
 ### Вручную
 
 Нужен Node.js 18+.
