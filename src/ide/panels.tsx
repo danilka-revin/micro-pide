@@ -1,8 +1,8 @@
 // Боковая панель MicroPIDE: Скетчбук, Примеры, Библиотеки, Платы.
 // Каждый раздел работает напрямую с API сервера (server/*.mjs).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  api, type CliInfo, type Core, type LibInfo, type SketchInfo, type SketchFile,
+  api, type CliInfo, type Core, type LibInfo, type SketchInfo, type SketchFile, type SystemInfo,
 } from './api';
 import { EXAMPLE_GROUPS } from './examples';
 import { Ic } from '../ui/icons';
@@ -20,21 +20,28 @@ export const SIDE_TABS: { id: SideTab; icon: string; label: string }[] = [
 // ---------------------------------------------------------------- скетчбук
 
 export function SketchbookPanel({
-  active, currentName, onOpen, onNew, onDelete,
+  active, sys, currentName, onOpen, onNew, onDelete, onImport, onToast,
 }: {
   active: boolean;
+  sys: SystemInfo | null;
   currentName: string;
   onOpen: (name: string) => void;
   onNew: () => void;
   onDelete: (name: string) => void;
+  onImport: (name: string) => void;
+  onToast: (s: string) => void;
 }) {
   const [list, setList] = useState<SketchInfo[]>([]);
+  const [book, setBook] = useState('');
+  const [useSystem, setUseSystem] = useState(false);
   const [err, setErr] = useState('');
 
   const reload = useCallback(async () => {
     try {
       const r = await api.sketches();
       setList(r.sketches || []);
+      setBook(r.sketchbook || '');
+      setUseSystem(!!r.useSystem);
       setErr('');
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -43,25 +50,79 @@ export function SketchbookPanel({
 
   useEffect(() => { if (active) void reload(); }, [active, reload]);
 
+  // импорт своих .ino-файлов (из любого места диска) в скетчбук
+  const importInput = useRef<HTMLInputElement>(null);
+  const doImport = async (fl: FileList | null) => {
+    if (!fl || !fl.length) return;
+    const files: SketchFile[] = [];
+    let name = '';
+    for (const f of Array.from(fl).slice(0, 24)) {
+      if (f.size > 4_000_000) continue;
+      const text = await f.text();
+      const base = f.name.replace(/\.[^.]+$/, '');
+      if (!name) name = base;
+      files.push({ path: f.name, content: text });
+    }
+    if (!files.length) { onToast('Не выбраны файлы скетча'); return; }
+    const ino = files.find((f) => /\.ino$/i.test(f.path));
+    if (!ino) { onToast('Выберите хотя бы один .ino-файл'); return; }
+    try {
+      const nm = (name || 'Imported').replace(/[^\p{L}\d _-]/gu, '').trim() || 'Imported';
+      await api.sketchSave(nm, files);
+      onToast(`Импортировано: ${nm}`);
+      await reload();
+      onImport(nm);
+    } catch (e) {
+      onToast('Импорт не удался: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
   return (
     <>
-      <button className="btn primary" style={{ margin: '2px 2px 6px', justifyContent: 'center' }} onClick={onNew}>
-        <Ic n="new" size={14} />Новый скетч
-      </button>
-      {err && <div className="side-note" style={{ color: 'var(--danger-ink)' }}>{err}</div>}
-      {list.length === 0 && !err && <div className="side-note">Скетчбук пуст. Сохраните скетч — он появится здесь (кнопка «Сохранить»).</div>}
-      {list.map((s) => (
-        <div key={s.name} className={'item' + (s.name === currentName ? ' active' : '')} onClick={() => onOpen(s.name)} title={`Открыть «${s.name}»`}>
-          <span className="ic"><Ic n="filecode" size={15} /></span>
-          <span className="nm">
-            {s.name}
-            <span className="sub">{s.files.length} файл(ов) · {new Date(s.mtime).toLocaleString()}</span>
-          </span>
-          <span className="act" onClick={(e) => { e.stopPropagation(); onDelete(s.name); }} title="Удалить скетч">
-            <Ic n="trash" size={14} />
-          </span>
+      <div className="row" style={{ margin: '0 0 4px' }}>
+        <button className="btn primary" style={{ flex: 1, justifyContent: 'center' }} onClick={onNew}>
+          <Ic n="new" size={14} />Новый
+        </button>
+        <button className="btn" style={{ flex: 1, justifyContent: 'center' }} onClick={() => importInput.current?.click()}>
+          <Ic n="open" size={14} />Импорт .ino
+        </button>
+        <input
+          ref={importInput} type="file" multiple hidden
+          accept=".ino,.h,.hpp,.cpp,.c,.S,.md,.txt,.json"
+          onChange={(e) => { void doImport(e.target.files); e.currentTarget.value = ''; }}
+        />
+      </div>
+      {book && (
+        <div className="side-note" style={{ paddingBottom: 2 }}>
+          <span className={'badge' + (useSystem ? ' ok' : ' gray')} title="Активный каталог скетчбука">
+            {useSystem ? 'Папка Arduino IDE' : 'Внутренний'}
+          </span>{' '}
+          <span className="mono" style={{ fontSize: 10, wordBreak: 'break-all' }}>{book}</span>
         </div>
-      ))}
+      )}
+      {err && <div className="side-note" style={{ color: 'var(--danger-ink)' }}>{err}</div>}
+      {list.length === 0 && !err && (
+        <div className="side-note">
+          Скетчей нет. Сохраните скетч (Ctrl+S) или импортируйте свои .ino-файлы.
+          {sys?.systemFound && !useSystem && ' Каталог Arduino IDE найден — включите его в Настройках.'}
+        </div>
+      )}
+      {list.map((s) => {
+        const last = s.name.includes('/') ? s.name.split('/').pop() : s.name;
+        const folder = s.name.includes('/') ? s.name.slice(0, s.name.lastIndexOf('/')) : '';
+        return (
+          <div key={s.name} className={'item' + (s.name === currentName ? ' active' : '')} onClick={() => onOpen(s.name)} title={`Открыть «${s.name}»`}>
+            <span className="ic"><Ic n="filecode" size={15} /></span>
+            <span className="nm">
+              {last}{folder && <span className="sub">{folder}/</span>}
+              {!folder && <span className="sub">{s.files.length} файл(ов) · {new Date(s.mtime).toLocaleString()}</span>}
+            </span>
+            <span className="act" onClick={(e) => { e.stopPropagation(); onDelete(s.name); }} title="Удалить скетч">
+              <Ic n="trash" size={14} />
+            </span>
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -154,18 +215,18 @@ export function LibsPanel({
   refreshKey: number;
 }) {
   const [tab, setTab] = useState<'installed' | 'search'>('installed');
-  const [libs, setLibs] = useState<LibInfo[]>([]);
-  const [found, setFound] = useState<LibInfo[]>([]);
+  const [libs, setLibs] = useState<(LibInfo & { source?: string })[]>([]);
+  const [found, setFound] = useState<(LibInfo & { source?: string })[]>([]);
   const [q, setQ] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
   const [confirm, setConfirm] = useState<string>('');
 
   const reloadInstalled = useCallback(async () => {
-    if (!cli?.ok) return;
     const r = await api.libs();
-    if (r.ok) setLibs(r.libs); else setErr(r.err || 'ошибка');
-  }, [cli?.ok]);
+    if (r.ok || (r.libs && r.libs.length)) setLibs(r.libs);
+    else setErr(r.err || 'ошибка');
+  }, []);
 
   useEffect(() => { void reloadInstalled(); }, [reloadInstalled, refreshKey]);
 
@@ -175,6 +236,7 @@ export function LibsPanel({
     const r = await api.libsSearch(s);
     if (r.ok) setFound(r.libs); else setErr(r.err || 'ошибка поиска');
   }, [cli?.ok]);
+
 
   useEffect(() => {
     if (tab !== 'search' || !cli?.ok) return;
@@ -198,19 +260,17 @@ export function LibsPanel({
     void reloadInstalled();
   };
 
-  if (!cli?.ok) {
-    return (
-      <div>
-        <div className="side-note">Для менеджера библиотек нужен arduino-cli. Установите его в разделе «Платы».</div>
-      </div>
-    );
-  }
-
   return (
     <>
+      {!cli?.ok && (
+        <div className="side-note">
+          Показаны библиотеки из папки Arduino IDE (sketchbook/libraries).
+          Поиск и установка новых требуют arduino-cli — см. раздел «Платы».
+        </div>
+      )}
       <div className="row" style={{ margin: '0 0 6px' }}>
         <button className={'btn tiny' + (tab === 'installed' ? ' on' : '')} onClick={() => setTab('installed')}>Установленные</button>
-        <button className={'btn tiny' + (tab === 'search' ? ' on' : '')} onClick={() => setTab('search')}>Поиск в индексе</button>
+        {cli?.ok && <button className={'btn tiny' + (tab === 'search' ? ' on' : '')} onClick={() => setTab('search')}>Поиск в индексе</button>}
       </div>
       {tab === 'search' && (
         <div className="search-row">
@@ -221,7 +281,7 @@ export function LibsPanel({
       {tab === 'installed' && libs.length === 0 && <div className="side-note">Библиотек пока нет. Поищите в индексе и установите.</div>}
       {(tab === 'installed' ? libs : found).map((l) => (
         <div key={l.name} className="card">
-          <b>{l.name} {l.version && <span className="badge gray">{l.version}</span>}</b>
+          <b>{l.name} {l.version && <span className="badge gray">{l.version}</span>}{l.source === 'ide' && <span className="badge" title="Установлена через Arduino IDE — из папки libraries скетчбука">IDE</span>}</b>
           {l.sentence && <span className="meta">{l.sentence}</span>}
           <div className="foot">
             <span className="meta">{l.author}</span>
@@ -262,18 +322,18 @@ export function BoardsPanel({
   refreshKey: number;
 }) {
   const [tab, setTab] = useState<'installed' | 'search'>('installed');
-  const [cores, setCores] = useState<Core[]>([]);
-  const [found, setFound] = useState<Core[]>([]);
+  const [cores, setCores] = useState<(Core & { source?: string })[]>([]);
+  const [found, setFound] = useState<(Core & { source?: string })[]>([]);
   const [q, setQ] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
   const [confirm, setConfirm] = useState<string>('');
 
   const reloadInstalled = useCallback(async () => {
-    if (!cli?.ok) return;
     const r = await api.cores();
-    if (r.ok) setCores(r.cores); else setErr(r.err || 'ошибка');
-  }, [cli?.ok]);
+    if (r.ok || (r.cores && r.cores.length)) setCores(r.cores);
+    else setErr(r.err || 'ошибка');
+  }, []);
 
   useEffect(() => { void reloadInstalled(); }, [reloadInstalled, refreshKey]);
 
@@ -303,31 +363,27 @@ export function BoardsPanel({
     void reloadInstalled();
   };
 
-  if (!cli?.ok) {
-    return (
-      <div>
+  const viaScan = cores.some((c) => c.source === 'system');
+  return (
+    <>
+      {!cli?.ok ? (
         <div className="side-note">
-          arduino-cli не найден — без него нельзя ни выбрать плату, ни прошить.
-          Нажмите «Установить» — среда скачает утилиту с GitHub в свой каталог данных.
+          arduino-cli не найден — без него не работает компиляция и прошивка.
+          {viaScan ? ' Платы из Arduino IDE уже видны ниже — их можно выбирать.' : ' Плат тоже нет.'}
         </div>
+      ) : (
+        <div className="side-note" style={{ paddingTop: 0 }}>
+          cli <b>{cli.version}</b>{cli.path ? ` · ${cli.path}` : ''}
+        </div>
+      )}
+      {!cli?.ok && (
         <button className="btn primary" style={{ width: '100%', justifyContent: 'center' }} onClick={onInstallCli}>
           <Ic n="down" size={14} />Установить arduino-cli
         </button>
-        <div className="side-note" style={{ marginTop: 8 }}>
-          Версия из каталога: {cli ? '' : '…'}<span className="mono">{cli?.dataDir}</span>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div className="side-note" style={{ paddingTop: 0 }}>
-        cli <b>{cli.version}</b>{cli.path ? ` · ${cli.path}` : ''}
-      </div>
+      )}
       <div className="row" style={{ margin: '0 0 6px' }}>
         <button className={'btn tiny' + (tab === 'installed' ? ' on' : '')} onClick={() => setTab('installed')}>Установленные</button>
-        <button className={'btn tiny' + (tab === 'search' ? ' on' : '')} onClick={() => setTab('search')}>Менеджер плат</button>
+        {cli?.ok && <button className={'btn tiny' + (tab === 'search' ? ' on' : '')} onClick={() => setTab('search')}>Менеджер плат</button>}
       </div>
       {tab === 'search' && (
         <div className="search-row">
@@ -338,7 +394,7 @@ export function BoardsPanel({
       {tab === 'installed' && cores.length === 0 && <div className="side-note">Платформы не установлены. Откройте «Менеджер плат» и поставьте, например, «Arduino AVR».</div>}
       {(tab === 'installed' ? cores : found).map((c) => (
         <div key={c.id} className="card">
-          <b>{c.name || c.id} <span className="badge gray">{c.id}</span></b>
+          <b>{c.name || c.id} <span className="badge gray">{c.id}</span>{c.source === 'system' && <span className="badge" title="Платформа найдена в каталоге Arduino IDE (Arduino15)">IDE</span>}</b>
           <span className="meta">
             {tab === 'installed'
               ? `версия ${c.version}${c.latest && c.latest !== c.version ? ` (доступна ${c.latest})` : ''}`

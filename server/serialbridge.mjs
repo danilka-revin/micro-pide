@@ -6,7 +6,7 @@
 // История хранится в кольцевом буфере, подписчики читают через /api/serial/stream.
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { findCli } from './arduino.mjs';
+import { findCli, envForCli } from './arduino.mjs';
 
 const MAX_BUF = 1200; // строк истории
 
@@ -78,12 +78,8 @@ export class SerialBridge {
       this.err = 'Ни пакета serialport, ни arduino-cli нет на машине — монитор порта недоступен.';
       return false;
     }
-    const env = { ...process.env };
-    env.ARDUINO_DIRECTORIES_DATA = join(info.dataDir, 'arduino15');
-    env.ARDUINO_DIRECTORIES_DOWNLOADS = join(info.dataDir, 'staging');
-    env.ARDUINO_DIRECTORIES_USER = info.sketchbook;
     this.proc = spawn(info.path, ['monitor', '--config', `baudrate=${baud}`, '-p', port], {
-      windowsHide: true, env,
+      windowsHide: true, env: envForCli(),
     });
     let banner = '';
     let dropped = false;

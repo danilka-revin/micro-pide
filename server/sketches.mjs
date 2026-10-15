@@ -1,61 +1,86 @@
-// Скетчбук MicroPIDE: папки со скетчами на диске (как в Arduino IDE).
-// Каждый скетч — каталог <sketchbook>/<Имя>/<Имя>.ino + вспомогательные файлы.
-// Каталог скетчбука: env MICRO_PIDE_SKETCHBOOK, иначе <repo>/.data/sketchbook.
+// Скетчбук MicroPIDE: проекты на диске, как в Arduino IDE.
+// Активный каталог — из resolveDirs(): либо папка Arduino IDE пользователя
+// (~/Arduino, ~/Documents/Arduino), либо внутренний .data/sketchbook.
+// Проекты ищутся рекурсивно (каталог = скетч, если в нём есть .ino).
 import { join, basename, extname, resolve, sep } from 'node:path';
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync,
   statSync, renameSync,
 } from 'node:fs';
-import { SKETCHBOOK_DIR, DATA_DIR } from './arduino.mjs';
+import { resolveDirs, DATA_DIR } from './arduino.mjs';
 
 const ALLOWED_EXT = new Set(['.ino', '.cpp', '.h', '.hpp', '.c', '.S', '.json', '.md', '.txt']);
-const SKETCH_EXT = new Set(['.ino', '.cpp', '.h', '.hpp', '.c', '.S']);
 
-function safeName(name) {
-  const n = String(name || '').trim();
-  if (!/^[\p{L}\d_][\p{L}\d _-]{0,60}$/u.test(n)) {
-    throw new Error('Недопустимое имя скетча: буквы, цифры, пробел, _ и - (до 60 символов)');
-  }
-  return n;
+/** Активный каталог скетчбука. */
+export function sketchbookDir() {
+  return resolveDirs().user;
 }
 
-/** Путь внутри скетчбука с защитой от выхода наружу. */
+/** Имя скетча: «Blink», «Учебные/Blink» или «Учебные/Основы/Blink». */
+function safeRel(name) {
+  const parts = String(name || '').split('/').map((p) => p.trim()).filter(Boolean);
+  if (!parts.length || parts.length > 3) throw new Error('Недопустимый путь скетча (до трёх уровней папок)');
+  for (const p of parts) {
+    if (!/^[\p{L}\d_][\p{L}\d _-]{0,60}$/u.test(p)) throw new Error('Недопустимое имя: ' + p);
+  }
+  return parts.join('/');
+}
+
+/** Каталог скетча внутри скетчбука, с защитой от выхода наружу. */
 function sketchDir(name) {
-  const n = safeName(name);
-  const dir = resolve(SKETCHBOOK_DIR, n);
-  if (!dir.startsWith(resolve(SKETCHBOOK_DIR) + sep)) throw new Error('Путь вне скетчбука');
+  const rel = safeRel(name);
+  const base = resolve(sketchbookDir());
+  const dir = resolve(base, rel);
+  if (dir !== base && !dir.startsWith(base + sep)) throw new Error('Путь вне скетчбука');
   return dir;
 }
 
 export function ensureSketchbook() {
-  mkdirSync(SKETCHBOOK_DIR, { recursive: true });
+  mkdirSync(sketchbookDir(), { recursive: true });
 }
 
-/** Список скетчей: { name, mtime, files } — файлы считаются лениво? нет, их немного. */
+/**
+ * Список скетчей: рекурсивный обход скетчбука (как дерево «Скетчбук» в
+ * Arduino IDE 2). Каталог считается скетчем, если в нём лежит .ino.
+ * name — путь от корня скетчбука: «Blink» или «Учебные/Blink».
+ */
 export function listSketches() {
   ensureSketchbook();
+  const base = sketchbookDir();
   const out = [];
-  for (const name of readdirSync(SKETCHBOOK_DIR)) {
-    const dir = join(SKETCHBOOK_DIR, name);
-    let st;
-    try { st = statSync(dir); } catch { continue; }
-    if (!st.isDirectory()) continue;
-    const files = [];
-    for (const f of readdirSync(dir)) {
-      const fp = join(dir, f);
+  const SKIP = new Set(['libraries', 'hardware', 'tools', 'node_modules']);
+  const walk = (dir, rel, depth) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const hasIno = entries.some((e) => e.isFile() && e.name.toLowerCase().endsWith('.ino'));
+    if (hasIno) {
+      const files = [];
+      for (const e of entries) {
+        if (!e.isFile()) continue;
+        if (!ALLOWED_EXT.has(extname(e.name).toLowerCase())) continue;
+        try { files.push({ path: e.name, size: statSync(join(dir, e.name)).size }); } catch { /* ignore */ }
+      }
+      let mtime = 0;
       try {
-        if (!statSync(fp).isFile()) continue;
-        if (!ALLOWED_EXT.has(extname(f).toLowerCase())) continue;
-        files.push({ path: f, size: statSync(fp).size });
+        mtime = statSync(dir).mtimeMs;
+        for (const f of files) mtime = Math.max(mtime, statSync(join(dir, f.path)).mtimeMs);
       } catch { /* ignore */ }
+      out.push({ name: rel, mtime, files });
+      return; // внутри каталога-скетча глубже не ищем
     }
-    out.push({ name, mtime: st.mtimeMs, files });
-  }
+    if (depth >= 3) return;
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name.startsWith('.') || SKIP.has(e.name.toLowerCase())) continue;
+      walk(join(dir, e.name), rel ? rel + '/' + e.name : e.name, depth + 1);
+    }
+  };
+  walk(base, '', 0);
   out.sort((a, b) => b.mtime - a.mtime);
   return out;
 }
 
-/** Прочитать скетч: все текстовые файлы. */
+/** Прочитать скетч: все текстовые файлы каталога. */
 export function readSketch(name) {
   const dir = sketchDir(name);
   if (!existsSync(dir)) throw new Error('Скетч не найден: ' + name);
@@ -69,7 +94,7 @@ export function readSketch(name) {
     } catch { /* ignore */ }
   }
   if (!files.length) throw new Error('В скетче нет читаемых файлов');
-  return { name: basename(dir), files };
+  return { name: safeRel(name), files };
 }
 
 /** Сохранить скетч (создать/перезаписать). files: [{path, content}]. */
@@ -78,10 +103,9 @@ export function writeSketch(name, files) {
   mkdirSync(dir, { recursive: true });
   if (!Array.isArray(files) || !files.length) throw new Error('Пустой список файлов');
   // главный .ino обязан называться как папка — как этого требует arduino-cli
+  const folder = basename(dir);
   const ino = files.find((f) => /\.ino$/i.test(f.path || ''));
-  if (ino && !/^[\p{L}\d_-]+\.ino$/iu.test(ino.path)) {
-    ino.path = safeName(name) + '.ino';
-  }
+  if (ino && !/^[\p{L}\d_-]+\.ino$/iu.test(ino.path)) ino.path = folder + '.ino';
   // удалить старые файлы, которых больше нет
   const keep = new Set(files.map((f) => basename(f.path)));
   for (const f of readdirSync(dir)) {
@@ -98,6 +122,10 @@ export function writeSketch(name, files) {
 export function deleteSketch(name) {
   const dir = sketchDir(name);
   if (!existsSync(dir)) throw new Error('Скетч не найден: ' + name);
+  // защита: удаляем только каталог-скетч (с .ino), не корень скетчбука
+  if (!existsSync(join(dir, basename(dir) + '.ino'))) {
+    throw new Error('В каталоге нет главного .ino — отказ удалять');
+  }
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -106,7 +134,13 @@ export function renameSketch(from, to) {
   if (!existsSync(src)) throw new Error('Скетч не найден: ' + from);
   const dst = sketchDir(to);
   if (existsSync(dst)) throw new Error('Скетч с таким именем уже есть');
+  mkdirSync(resolve(dst, '..'), { recursive: true });
   renameSync(src, dst);
+  // .ino должен называться как новая папка
+  const folder = basename(dst);
+  const oldIno = join(dst, basename(src) + '.ino');
+  const newIno = join(dst, folder + '.ino');
+  if (existsSync(oldIno) && oldIno !== newIno) renameSync(oldIno, newIno);
   return readSketch(to);
 }
 
@@ -133,13 +167,12 @@ export function normalizeFiles(files) {
 /** Прочитать каталог примера по абсолютному пути (только внутри данных приложения). */
 export function readSketchDir(absPath) {
   const dir = resolve(String(absPath || ''));
-  const allowedRoots = [resolve(DATA_DIR), resolve(SKETCHBOOK_DIR)];
-  if (!allowedRoots.some((root) => dir.startsWith(root + sep) || dir === root)) {
-    throw new Error('Путь вне данных приложения');
-  }
+  const d = resolveDirs();
+  const allowedRoots = [resolve(DATA_DIR), resolve(d.user), resolve(d.data), resolve(d.internal.user), resolve(d.internal.data)];
+  const okRoot = allowedRoots.some((root) => dir === root || dir.startsWith(root + sep));
+  if (!okRoot) throw new Error('Путь вне данных приложения');
   if (!existsSync(dir)) throw new Error('Каталог не найден');
-  const st = statSync(dir);
-  if (!st.isDirectory()) throw new Error('Это не каталог');
+  if (!statSync(dir).isDirectory()) throw new Error('Это не каталог');
   const files = [];
   for (const f of readdirSync(dir)) {
     const fp = join(dir, f);
@@ -150,6 +183,6 @@ export function readSketchDir(absPath) {
     } catch { /* ignore */ }
   }
   if (!files.length) throw new Error('В каталоге нет читаемых файлов скетча');
-  const name = basename(dir).replace(/[^\w\x20-]/g, '') || 'Example';
+  const name = basename(dir).replace(/[^\p{L}\d _-]/gu, '') || 'Example';
   return { name, files };
 }

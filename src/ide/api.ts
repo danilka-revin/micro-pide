@@ -37,6 +37,18 @@ export interface LibInfo {
 export interface SketchFile { path: string; content: string; size?: number }
 export interface SketchInfo { name: string; mtime: number; files: { path: string; size: number }[] }
 
+export interface SystemInfo {
+  ok: boolean;
+  dataDir: string;
+  sketchbook: string;
+  sketchbookExists: boolean;
+  useSystem: boolean;
+  systemFound: boolean;
+  systemSketchbook: string;
+  systemData: string;
+  config: { sketchbook?: string | null; useSystemArduino?: boolean | null };
+}
+
 async function getJson(url: string, timeout = 120_000): Promise<any> {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeout);
@@ -58,12 +70,16 @@ async function postJson(url: string, body: unknown): Promise<any> {
 }
 
 export const api = {
+  system: (): Promise<SystemInfo> => getJson('/api/system', 20_000),
+  configGet: (): Promise<{ config: SystemInfo['config'] }> => getJson('/api/config', 20_000),
+  configSet: (patch: { sketchbook?: string | null; useSystemArduino?: boolean | null }): Promise<any> =>
+    postJson('/api/config', patch),
   cli: (): Promise<CliInfo> => getJson('/api/cli', 20_000),
   installCli: (onLine: (s: string) => void): Promise<void> =>
     streamPost('/api/cli/install', {}, onLine),
 
   ports: (): Promise<{ ok: boolean; ports: SerialPortInfo[]; err: string | null }> => getJson('/api/ports'),
-  cores: (): Promise<{ ok: boolean; cores: Core[]; err: string | null }> => getJson('/api/cores'),
+  cores: (): Promise<{ ok: boolean; cores: (Core & { source?: string })[]; err: string | null; via?: string }> => getJson('/api/cores'),
   coresSearch: (q: string): Promise<{ ok: boolean; cores: Core[]; err: string | null }> =>
     getJson('/api/cores/search?q=' + encodeURIComponent(q), 180_000),
   coreInstall: (id: string, onLine: (s: string) => void): Promise<void> =>
@@ -71,7 +87,7 @@ export const api = {
   coreRemove: (id: string): Promise<any> => postJson('/api/cores/remove', { id }),
   boards: (): Promise<{ ok: boolean; boards: { name: string; fqbn: string }[]; err: string | null }> => getJson('/api/boards', 180_000),
 
-  libs: (): Promise<{ ok: boolean; libs: LibInfo[]; err: string | null }> => getJson('/api/libs'),
+  libs: (): Promise<{ ok: boolean; libs: (LibInfo & { source?: string })[]; err: string | null }> => getJson('/api/libs'),
   libsSearch: (q: string): Promise<{ ok: boolean; libs: LibInfo[]; err: string | null }> =>
     getJson('/api/libs/search?q=' + encodeURIComponent(q), 180_000),
   libInstall: (name: string, onLine: (s: string) => void): Promise<void> =>
@@ -81,7 +97,7 @@ export const api = {
   examples: (): Promise<{ ok: boolean; groups: { name: string; examples: { name: string; path: string; sketches: { name: string; path: string }[] }[] }[]; err: string | null }> =>
     getJson('/api/examples', 180_000),
 
-  sketches: (): Promise<{ sketches: SketchInfo[] }> => getJson('/api/sketches'),
+  sketches: (): Promise<{ ok: boolean; sketchbook: string; useSystem: boolean; systemFound: boolean; sketches: SketchInfo[] }> => getJson('/api/sketches'),
   exampleGet: (path: string): Promise<{ ok?: boolean; files: SketchFile[]; name: string; error?: string }> =>
     getJson('/api/example/get?path=' + encodeURIComponent(path)),
   sketchGet: (name: string): Promise<{ ok?: boolean; files: SketchFile[]; name: string; error?: string }> =>

@@ -45,8 +45,9 @@ import { fileURLToPath } from 'node:url';
 import {
   findCli, installCli, listPorts, listCores, listAllBoards, searchCores,
   installCore, uninstallCore, listLibs, searchLibs, installLib, uninstallLib,
-  listExamples, streamCli, DATA_DIR,
+  listExamples, streamCli, DATA_DIR, resolveDirs, getConfig, setConfig,
 } from './arduino.mjs';
+import { existsSync as dirExists, statSync as dirStat } from 'node:fs';
 import {
   ensureSketchbook, listSketches, readSketch, writeSketch, deleteSketch,
   renameSketch, sketchPath, normalizeFiles, readSketchDir,
@@ -358,9 +359,55 @@ async function api(req, res, url) {
     return;
   }
 
+  // ---------- конфиг и системные каталоги ----------
+  if (req.method === 'GET' && path === '/api/system') {
+    const d = resolveDirs();
+    const sbExists = (() => { try { return dirExists(d.user) && dirStat(d.user).isDirectory(); } catch { return false; } })();
+    return sendJson(res, 200, {
+      ok: true,
+      dataDir: DATA_DIR,
+      sketchbook: d.user,
+      sketchbookExists: sbExists,
+      useSystem: d.useSystem,
+      systemFound: d.systemFound,
+      systemSketchbook: d.system.sketchbook,
+      systemData: d.system.data,
+      config: getConfig(),
+    });
+  }
+  if (req.method === 'GET' && path === '/api/config') {
+    return sendJson(res, 200, { ok: true, config: getConfig() });
+  }
+  if (req.method === 'POST' && path === '/api/config') {
+    const body = await readBody(req, 16 * 1024);
+    const patch = {};
+    if ('sketchbook' in body) {
+      if (body.sketchbook === null || body.sketchbook === '') patch.sketchbook = null;
+      else {
+        const p = String(body.sketchbook).trim();
+        // путь должен быть абсолютным (диск/корень), чтобы не поймать относительную ерунду
+        if (!p.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(p)) {
+          return sendJson(res, 400, { ok: false, error: 'Укажите абсолютный путь каталога' });
+        }
+        patch.sketchbook = p;
+      }
+    }
+    if ('useSystemArduino' in body) patch.useSystemArduino = body.useSystemArduino === null ? null : !!body.useSystemArduino;
+    const cfg = setConfig(patch);
+    const d = resolveDirs();
+    return sendJson(res, 200, { ok: true, config: cfg, dirs: { sketchbook: d.user, useSystem: d.useSystem } });
+  }
+
   // ---------- скетчбук ----------
   if (req.method === 'GET' && path === '/api/sketches') {
-    return sendJson(res, 200, { ok: true, sketchbook: DATA_DIR, sketches: listSketches() });
+    const d = resolveDirs();
+    return sendJson(res, 200, {
+      ok: true,
+      sketchbook: d.user,
+      useSystem: d.useSystem,
+      systemFound: d.systemFound,
+      sketches: listSketches(),
+    });
   }
   if (req.method === 'GET' && path === '/api/example/get') {
     try { return sendJson(res, 200, { ok: true, ...readSketchDir(q.get('path') || '') }); }

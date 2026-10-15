@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom';
 import { Ic } from './icons';
 import { NI, TI, SI, ConfirmDialog } from './widgets';
 import { ACCENT_PRESETS, THEME_BASE, isHex, mix, rgba, type ThemeId } from './palette';
+import { api, type SystemInfo } from '../ide/api';
 import {
   THEME_PRESETS, UI_PRESETS, isThemeActive, makeProfile, makeThemePreset,
   loadUserPresets, saveUserPresets, patchActive, type SettingsProfile, type ThemePreset, type UserPresets,
@@ -30,6 +31,8 @@ interface Props {
   onClose: () => void;
   onOpenUpdater: () => void;
   version: string | null;
+  sys: SystemInfo | null;
+  onSysChanged: () => void;
 }
 
 /** Образец темы для карточки: полоски цветов превью. */
@@ -67,17 +70,28 @@ function ThemeCard({ p, active, onPick, onDelete }: {
   );
 }
 
-export function SettingsWindow({ prefs, set, reset, onClose, onOpenUpdater, version }: Props) {
+export function SettingsWindow({ prefs, set, reset, onClose, onOpenUpdater, version, sys, onSysChanged }: Props) {
   const [sec, setSec] = useState(prefs.setSection && SECTIONS.some((s) => s.id === prefs.setSection) ? prefs.setSection : 'general');
   const [user, setUser] = useState<UserPresets>(() => loadUserPresets());
   const [newThemeName, setNewThemeName] = useState('');
   const [profileName, setProfileName] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
   const [delTheme, setDelTheme] = useState<string>('');
+  const [sbPath, setSbPath] = useState('');
+  const [sbBusy, setSbBusy] = useState(false);
 
   const goto = (id: string) => {
     setSec(id);
     set({ setSection: id });
+  };
+
+  const applyConfig = async (patch: { sketchbook?: string | null; useSystemArduino?: boolean | null }) => {
+    setSbBusy(true);
+    try {
+      await api.configSet(patch);
+      onSysChanged();
+    } catch { /* пользователь увидит путь без изменений */ }
+    setSbBusy(false);
   };
 
   const allThemes = useMemo(() => [...THEME_PRESETS, ...user.themes], [user.themes]);
@@ -229,6 +243,47 @@ export function SettingsWindow({ prefs, set, reset, onClose, onOpenUpdater, vers
                   <button className="btn" onClick={onOpenUpdater}><Ic n="refresh" size={14} />Проверить обновления</button>
                   <span className="hint" style={{ padding: 0 }}>Версия: <span className="mono">{version || 'неизвестно'}</span></span>
                 </div>
+                <h3>Скетчбук (проекты Arduino IDE)</h3>
+                <p className="sub">
+                  {sys?.systemFound
+                    ? <>Каталоги Arduino IDE найдены: проекты и библиотеки открываются прямо из вашей папки Arduino.</>
+                    : <>Стандартные папки Arduino IDE не найдены — используется внутренний скетчбук. Можно указать свою папку проектов.</>}
+                </p>
+                <div className="upd-vers" style={{ gridTemplateColumns: '1fr' }}>
+                  <div className="upd-ver">
+                    <span className="upd-lab">Активный скетчбук</span>
+                    <b className="upd-mono" style={{ wordBreak: 'break-all' }}>{sys?.sketchbook || '…'}</b>
+                  </div>
+                  <span className="meta" style={{ color: 'var(--muted)', fontSize: 11.5 }}>
+                    Источник: {sys?.useSystem ? 'папка Arduino IDE' : sys?.config?.sketchbook ? 'задан вручную' : 'внутренний каталог'} ·
+                    {' '}данные плат: {sys?.useSystem ? sys?.systemData : '.data/arduino15'}
+                  </span>
+                </div>
+                <div className="field">
+                  <label>Своя папка</label>
+                  <input
+                    className="txt" placeholder="/home/user/Arduino"
+                    value={sbPath} onChange={(e) => setSbPath(e.target.value)}
+                  />
+                  <button className="btn" disabled={sbBusy || !sbPath.trim()} onClick={() => void applyConfig({ sketchbook: sbPath.trim() })}>
+                    Применить
+                  </button>
+                </div>
+                <div className="row">
+                  <button className="btn" disabled={sbBusy} onClick={() => void applyConfig({ sketchbook: null })}>
+                    Сбросить на авто
+                  </button>
+                  <button className="btn" disabled={sbBusy || sys?.useSystem} onClick={() => void applyConfig({ useSystemArduino: true, sketchbook: null })}>
+                    Папка Arduino IDE
+                  </button>
+                  <button className="btn" disabled={sbBusy || sys?.useSystem === false && !sys?.config?.sketchbook} onClick={() => void applyConfig({ useSystemArduino: false, sketchbook: null })}>
+                    Внутренний каталог
+                  </button>
+                </div>
+                <p className="sub" style={{ marginTop: 6 }}>
+                  Смена действует сразу: списки скетчей, библиотек и плат перечитаются. Компиляция будет
+                  видеть библиотеки из папки <span className="mono">libraries/</span> выбранного скетчбука.
+                </p>
               </>
             )}
 

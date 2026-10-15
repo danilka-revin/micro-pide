@@ -49,6 +49,17 @@
 
 ## Запуск
 
+### Быстро — единый установщик
+
+```bash
+./install.sh        # Linux/macOS: поставит Node.js (если нет), зависимости, arduino-cli,
+                    # платформу AVR и запустит на :8080
+```
+
+Windows: `install.cmd`. Подробный гайд — [INSTALL.md](INSTALL.md).
+
+### Вручную
+
 Нужен Node.js 18+.
 
 ```bash
@@ -57,10 +68,15 @@
 ./run.sh --build    # принудительная пересборка
 ```
 
-Windows: `run.cmd`.
-
 Открыть `http://localhost:8080`. Разработка: `npm run dev` (vite, API проксируется на :8080)
 и рядом `npm run server`.
+
+### Проекты и библиотеки Arduino IDE
+
+Если установлена Arduino IDE, MicroPIDE сам подхватывает её папки: проекты из
+скетчбука (`~/Arduino` / `~/Documents/Arduino`), библиотеки из `libraries/` и
+платы из `Arduino15` — с меткой **IDE** в панелях. Каталог можно сменить в
+Настройках (Ctrl+,) в любой момент.
 
 ### arduino-cli
 

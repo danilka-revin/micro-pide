@@ -14,7 +14,7 @@ import { applyCustomColors } from './ui/palette';
 import { useUpdater } from './ui/updater';
 import { SettingsWindow } from './ui/settings';
 import { CodeEditor } from './ide/editor';
-import { api, type CliInfo, type SerialPortInfo, type SketchFile } from './ide/api';
+import { api, type CliInfo, type SerialPortInfo, type SketchFile, type SystemInfo } from './ide/api';
 import { ConsoleView, pushLine, type ConsoleLine } from './ide/console';
 import { SerialMonitor, SerialPlotter } from './ide/serial';
 import { SIDE_TABS, SketchbookPanel, ExamplesPanel, LibsPanel, BoardsPanel, type SideTab } from './ide/panels';
@@ -58,6 +58,7 @@ export default function App() {
 
   // ---------------- железо ----------------
   const [cli, setCli] = useState<CliInfo | null>(null);
+  const [sys, setSys] = useState<SystemInfo | null>(null);
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [boards, setBoards] = useState<{ name: string; fqbn: string }[]>([]);
   const [fqbn, setFqbn] = useState(localStorage.getItem('micropide.fqbn') || '');
@@ -113,6 +114,9 @@ export default function App() {
   const refreshCli = useCallback(async () => {
     try { setCli(await api.cli()); } catch { setCli(null); }
   }, []);
+  const refreshSys = useCallback(async () => {
+    try { setSys(await api.system()); } catch { setSys(null); }
+  }, []);
 
   const refreshPorts = useCallback(async () => {
     try {
@@ -130,7 +134,8 @@ export default function App() {
 
   useEffect(() => {
     void refreshCli();
-  }, [refreshCli, hwKey]);
+    void refreshSys();
+  }, [refreshCli, refreshSys, hwKey]);
 
   useEffect(() => {
     if (!cli?.ok) return;
@@ -557,10 +562,13 @@ export default function App() {
               {sideTab === 'sketchbook' && (
                 <SketchbookPanel
                   active={sideTab === 'sketchbook'}
+                  sys={sys}
                   currentName={loadedFrom}
                   onOpen={openSketch}
                   onNew={() => { setDlgText('Sketch' + (sketchbook.length + 1)); setDlg('new'); }}
                   onDelete={(n) => setConfirmDel(n)}
+                  onImport={(n) => openSketch(n)}
+                  onToast={say}
                 />
               )}
               {sideTab === 'examples' && (
@@ -806,6 +814,8 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onOpenUpdater={() => updater.open()}
           version={version}
+          sys={sys}
+          onSysChanged={() => { void refreshSys(); void refreshCli(); void reloadSketchbook(); }}
         />
       )}
 

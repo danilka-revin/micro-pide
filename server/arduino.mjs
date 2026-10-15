@@ -2,9 +2,9 @@
 // и библиотек, компиляция и прошивка. Всё через spawn — без зависимостей.
 // Если arduino-cli не найден, attemptingInstall описывает, как его поставить.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, createWriteStream } from 'node:fs';
-import { chmodSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, createWriteStream, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { join, resolve as resolvePath, sep as pathSep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -12,9 +12,93 @@ import { fileURLToPath } from 'node:url';
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 // каталог данных: env, иначе <repo>/.data (рядом с server/)
 export const DATA_DIR = process.env.MICRO_PIDE_DATA || join(HERE, '..', '.data');
-export const SKETCHBOOK_DIR = process.env.MICRO_PIDE_SKETCHBOOK || join(DATA_DIR, 'sketchbook');
 const CLI_DIR = join(DATA_DIR, 'bin');
 export const CLI_PATH = join(CLI_DIR, process.platform === 'win32' ? 'arduino-cli.exe' : 'arduino-cli');
+
+// ---------------------------------------------------------------- каталоги Arduino IDE
+//
+// Если на машине стоит Arduino IDE, у неё есть свои каталоги:
+//   скетчбук:  ~/Arduino (Linux), ~/Documents/Arduino (macOS/Windows)
+//   данные:    ~/.arduino15, ~/Library/Arduino15, %LOCALAPPDATA%\Arduino15
+// MicroPIDE подхватывает их автоматически: открывает проекты пользователя,
+// видит его библиотеки и установленные платформы — ничего не скачивая заново.
+
+/** Типовые каталоги Arduino IDE на этой ОС. */
+export function systemArduinoDirs() {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const docs = process.platform === 'win32'
+    ? join(process.env.USERPROFILE || home, 'Documents')
+    : join(home, 'Documents');
+  const data = process.platform === 'win32'
+    ? join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'Arduino15')
+    : process.platform === 'darwin'
+      ? join(home, 'Library', 'Arduino15')
+      : join(home, '.arduino15');
+  // на Linux Arduino IDE держит скетчбук прямо в ~/Arduino
+  const sketchbook = process.platform === 'linux' ? join(home, 'Arduino') : join(docs, 'Arduino');
+  return { data, sketchbook };
+}
+
+// ---------------- конфиг (persist .data/config.json) ----------------
+
+function configPath() { return join(DATA_DIR, 'config.json'); }
+
+export function getConfig() {
+  try { return JSON.parse(readFileSync(configPath(), 'utf8')); } catch { return {}; }
+}
+
+export function setConfig(patch) {
+  const cur = getConfig();
+  const next = { ...cur };
+  if ('sketchbook' in patch) next.sketchbook = typeof patch.sketchbook === 'string' && patch.sketchbook.trim() ? patch.sketchbook.trim() : null;
+  if ('useSystemArduino' in patch) next.useSystemArduino = patch.useSystemArduino === null ? null : !!patch.useSystemArduino;
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(configPath(), JSON.stringify(next, null, 2));
+  return next;
+}
+
+/**
+ * Куда смотреть: скетчбук и данные платформ.
+ * Приоритет: config.json → env MICRO_PIDE_SKETCHBOOK (внутренний режим) →
+ * папки Arduino IDE (если есть) → внутренние .data.
+ */
+export function resolveDirs() {
+  const cfg = getConfig();
+  const sys = systemArduinoDirs();
+  const systemFound = existsSync(sys.data) || existsSync(sys.sketchbook);
+  let useSystem;
+  if (cfg.useSystemArduino === true || cfg.useSystemArduino === false) useSystem = cfg.useSystemArduino;
+  else if (process.env.MICRO_PIDE_SYSTEM_ARDUINO !== undefined) useSystem = process.env.MICRO_PIDE_SYSTEM_ARDUINO !== '0';
+  else if (process.env.MICRO_PIDE_SKETCHBOOK) useSystem = false;
+  else useSystem = systemFound;
+
+  const internal = {
+    data: join(DATA_DIR, 'arduino15'),
+    downloads: join(DATA_DIR, 'staging'),
+    user: process.env.MICRO_PIDE_SKETCHBOOK || join(DATA_DIR, 'sketchbook'),
+  };
+  const user = cfg.sketchbook || (useSystem ? sys.sketchbook : internal.user);
+  return {
+    useSystem: useSystem && !cfg.sketchbook,
+    systemFound,
+    user,               // активный скетчбук (проекты Arduino IDE, если найдены)
+    data: useSystem ? sys.data : internal.data,
+    downloads: useSystem ? join(sys.data, 'staging') : internal.downloads,
+    internal, system: sys,
+  };
+}
+
+/** Окружение для вызовов arduino-cli: каталоги выбранных директорий. */
+export function envForCli(extra = {}) {
+  const d = resolveDirs();
+  return {
+    ...process.env,
+    ARDUINO_DIRECTORIES_DATA: d.data,
+    ARDUINO_DIRECTORIES_DOWNLOADS: d.downloads,
+    ARDUINO_DIRECTORIES_USER: d.user,
+    ...extra,
+  };
+}
 
 let cachedInfo = null;
 
@@ -56,7 +140,8 @@ let resolvedVersion = '';
 /** Найти работающий arduino-cli и запомнить путь/версию. */
 export async function findCli(force = false) {
   if (!force && cachedInfo && Date.now() - cachedInfo.at < 15_000) return cachedInfo.info;
-  let info = { ok: false, path: null, version: '', error: null, dataDir: DATA_DIR, sketchbook: SKETCHBOOK_DIR };
+  const dirs = resolveDirs();
+  let info = { ok: false, path: null, version: '', error: null, dataDir: dirs.data, sketchbook: dirs.user };
   const paths = resolvedPath ? [resolvedPath, ...candidates()] : candidates();
   for (const p of paths) {
     if (!p || p === 'arduino-cli') continue;
@@ -66,7 +151,7 @@ export async function findCli(force = false) {
       const m = /Version:\s*([0-9a-zA-Z.\-]+)/.exec(r.stdout);
       resolvedPath = p;
       resolvedVersion = m ? m[1] : (r.stdout.trim().split('\n')[0] || '');
-      info = { ok: true, path: p, version: resolvedVersion, error: null, dataDir: DATA_DIR, sketchbook: SKETCHBOOK_DIR };
+      info = { ok: true, path: p, version: resolvedVersion, error: null, dataDir: dirs.data, sketchbook: dirs.user };
       cachedInfo = { at: Date.now(), info };
       return info;
     }
@@ -77,7 +162,7 @@ export async function findCli(force = false) {
     const m = /Version:\s*([0-9a-zA-Z.\-]+)/.exec(r.stdout);
     resolvedPath = 'arduino-cli';
     resolvedVersion = m ? m[1] : '';
-    info = { ok: true, path: 'arduino-cli', version: resolvedVersion, error: null, dataDir: DATA_DIR, sketchbook: SKETCHBOOK_DIR };
+    info = { ok: true, path: 'arduino-cli', version: resolvedVersion, error: null, dataDir: dirs.data, sketchbook: dirs.user };
   } else {
     info.error = 'arduino-cli не найден. Установите его кнопкой «Установить» или сами: arduino.cc/en/software';
   }
@@ -89,12 +174,9 @@ export async function findCli(force = false) {
 export async function runCli(args, opts = {}) {
   const info = await findCli();
   if (!info.ok) return { err: new Error(info.error || 'arduino-cli не найден'), stdout: '', stderr: '', code: -1 };
-  const env = { ...process.env };
-  // каталоги данных cli: платы/библиотеки ставим внутрь .data, чтобы не трогать систему
-  env.ARDUINO_DIRECTORIES_DATA = join(DATA_DIR, 'arduino15');
-  env.ARDUINO_DIRECTORIES_DOWNLOADS = join(DATA_DIR, 'staging');
-  env.ARDUINO_DIRECTORIES_USER = SKETCHBOOK_DIR;
-  return execFileP(info.path, args, { ...opts, env });
+  // каталоги cli указывают на активные директории (в т.ч. папки Arduino IDE):
+  // компиляция видит библиотеки и платы пользователя
+  return execFileP(info.path, args, { ...opts, env: envForCli() });
 }
 
 /** Потоковый запуск (для компиляции/прошивки): строки вывода уходят в onLine. */
@@ -102,13 +184,9 @@ export function streamCli(args, onLine, signal) {
   return new Promise((resolve) => {
     findCli().then((info) => {
       if (!info.ok) { resolve({ code: -1, err: new Error(info.error || 'arduino-cli не найден') }); return; }
-      const env = { ...process.env };
-      env.ARDUINO_DIRECTORIES_DATA = join(DATA_DIR, 'arduino15');
-      env.ARDUINO_DIRECTORIES_DOWNLOADS = join(DATA_DIR, 'staging');
-      env.ARDUINO_DIRECTORIES_USER = SKETCHBOOK_DIR;
       let p;
       try {
-        p = spawn(info.path, args, { windowsHide: true, env });
+        p = spawn(info.path, args, { windowsHide: true, env: envForCli() });
       } catch (e) { resolve({ code: -1, err: e }); return; }
       let buf = '';
       const pump = (d) => {
@@ -208,6 +286,83 @@ export async function installCli(onLine) {
 
 // ---------------------------------------------------------------- списки
 
+/**
+ * Платформы из каталога данных Arduino IDE (Arduino15/packages) — читаем
+ * boards.txt/platform.txt. Работает БЕЗ arduino-cli: видно платы, установленные
+ * через Arduino IDE, и их FQBN.
+ */
+export function scanCoresFromData() {
+  const d = resolveDirs();
+  const out = [];
+  const pkgRoot = join(d.data, 'packages');
+  let pkgs = [];
+  try { pkgs = readdirSync(pkgRoot, { withFileTypes: true }); } catch { return out; }
+  for (const pkg of pkgs) {
+    if (!pkg.isDirectory()) continue;
+    const hw = join(pkgRoot, pkg.name, 'hardware');
+    let archs = [];
+    try { archs = readdirSync(hw, { withFileTypes: true }); } catch { continue; }
+    for (const arch of archs) {
+      if (!arch.isDirectory()) continue;
+      let vers = [];
+      try { vers = readdirSync(join(hw, arch.name), { withFileTypes: true }); } catch { continue; }
+      for (const ver of vers) {
+        if (!ver.isDirectory()) continue;
+        const vdir = join(hw, arch.name, ver.name);
+        let boardsTxt = '';
+        try { boardsTxt = readFileSync(join(vdir, 'boards.txt'), 'utf8'); } catch { continue; }
+        let platName = `${pkg.name} ${arch.name}`;
+        try {
+          const pt = readFileSync(join(vdir, 'platform.txt'), 'utf8');
+          const m = /^name=(.+)$/m.exec(pt);
+          if (m) platName = m[1].trim();
+        } catch { /* без platform.txt — синтетическое имя */ }
+        const seen = new Map();
+        for (const line of boardsTxt.split('\n')) {
+          const m = /^([\w.+-]+)\.name=(.+)$/.exec(line.trim());
+          if (m && !seen.has(m[1])) seen.set(m[1], m[2].trim());
+        }
+        const boards = [...seen.entries()].map(([key, name]) => ({ name, fqbn: `${pkg.name}:${arch.name}:${key}` }));
+        if (boards.length) {
+          out.push({ id: `${pkg.name}:${arch.name}`, name: platName, version: ver.name, boards, source: 'system' });
+        }
+        break; // достаточно последней установленной версии платформы
+      }
+    }
+  }
+  return out;
+}
+
+/** Библиотеки из скетчбука (папка libraries/, куда ставит их Arduino IDE). */
+export function scanSketchbookLibs() {
+  const d = resolveDirs();
+  const base = join(d.user, 'libraries');
+  const out = [];
+  let entries = [];
+  try { entries = readdirSync(base, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const dir = join(base, e.name);
+    let props = '';
+    try { props = readFileSync(join(dir, 'library.properties'), 'utf8'); } catch { /* без свойств — только имя */ }
+    const kv = {};
+    for (const line of props.split('\n')) {
+      const m = /^([\w.]+)\s*=\s*(.*)$/.exec(line.trim());
+      if (m) kv[m[1].toLowerCase()] = m[2].trim();
+    }
+    out.push({
+      name: kv.name || e.name,
+      version: kv.version || '',
+      author: kv.author || '',
+      sentence: kv.sentence || '',
+      category: kv.category || '',
+      source: 'ide',
+    });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
 function parseJson(text) {
   try { return JSON.parse(text); } catch { return null; }
 }
@@ -226,31 +381,47 @@ export async function listPorts() {
   return { ports, err: null };
 }
 
-/** Установленные платформы (ядра). */
+/** Установленные платформы (ядра): cli, а без него — скан каталогов Arduino IDE. */
 export async function listCores() {
   const r = await runCli(['core', 'list', '--format', 'json'], { timeout: 30_000 });
-  if (r.err) return { err: String(r.stderr || r.err.message || 'ошибка'), cores: [] };
-  const j = parseJson(r.stdout) || [];
-  const cores = j.map((c) => ({
-    id: c.ID || c.id || '',
-    name: c.Name || c.name || '',
-    version: c.Installed ? String(c.Installed) : (c.installed || ''),
-    latest: c.Latest ? String(c.Latest) : (c.latest || ''),
-    boards: (c.Boards || c.boards || []).map((b) => ({ name: b.Name || b.name || '', fqbn: b.FQBN || b.fqbn || '' })),
-  }));
-  return { cores, err: null };
+  if (!r.err) {
+    const j = parseJson(r.stdout) || [];
+    const cores = j.map((c) => ({
+      id: c.ID || c.id || '',
+      name: c.Name || c.name || '',
+      version: c.Installed ? String(c.Installed) : (c.installed || ''),
+      latest: c.Latest ? String(c.Latest) : (c.latest || ''),
+      boards: (c.Boards || c.boards || []).map((b) => ({ name: b.Name || b.name || '', fqbn: b.FQBN || b.fqbn || '' })),
+      source: 'cli',
+    }));
+    if (cores.length) return { cores, err: null, via: 'cli' };
+  }
+  const scanned = scanCoresFromData();
+  return { cores: scanned, err: null, via: scanned.length ? 'scan' : 'none' };
 }
 
-/** Все платы, доступные для выбора (из установленных ядер). */
+/** Все платы для выбора: cli (listall) + платы из каталогов Arduino IDE. */
 export async function listAllBoards() {
+  const boards = [];
+  const seen = new Set();
   const r = await runCli(['board', 'listall', '--format', 'json'], { timeout: 60_000 });
-  if (r.err) return { err: String(r.stderr || r.err.message || 'ошибка'), boards: [] };
-  const j = parseJson(r.stdout) || [];
-  const boards = (j.boards || j || []).map((b) => ({
-    name: b.Name || b.name || '',
-    fqbn: b.FQBN || b.fqbn || '',
-  }));
-  return { boards, err: null };
+  if (!r.err) {
+    const j = parseJson(r.stdout) || [];
+    for (const b of (j.boards || j || [])) {
+      const fqbn = b.FQBN || b.fqbn || '';
+      if (!fqbn || seen.has(fqbn)) continue;
+      seen.add(fqbn);
+      boards.push({ name: b.Name || b.name || '', fqbn });
+    }
+  }
+  for (const core of scanCoresFromData()) {
+    for (const b of core.boards) {
+      if (seen.has(b.fqbn)) continue;
+      seen.add(b.fqbn);
+      boards.push(b);
+    }
+  }
+  return { boards, err: boards.length ? null : 'Платы не найдены: установите платформу' };
 }
 
 /** Поиск платформ в индексе (менеджер плат). */
@@ -285,18 +456,46 @@ export async function uninstallCore(id) {
 
 // ---------------------------------------------------------------- библиотеки
 
+/**
+ * Установленные библиотеки: от cli и из папки libraries/ скетчбука (куда их
+ * ставит Arduino IDE). Объединяем без дублей; библиотеки из скетчбука
+ * помечены source: 'ide' — их не удаляет cli-удаление.
+ */
 export async function listLibs() {
+  const ideLibs = scanSketchbookLibs();
+  const byName = new Map();
+  for (const l of ideLibs) byName.set(l.name.toLowerCase(), { ...l });
   const r = await runCli(['lib', 'list', '--format', 'json'], { timeout: 30_000 });
-  if (r.err) return { err: String(r.stderr || r.err.message || 'ошибка'), libs: [] };
-  const j = parseJson(r.stdout) || [];
-  const libs = j.map((l) => ({
-    name: l.library?.name || l.name || '',
-    version: l.library?.version || l.version || '',
-    author: l.library?.author || '',
-    sentence: l.library?.sentence || '',
-    category: l.library?.category || '',
-  }));
-  return { libs, err: null };
+  let cliErr = null;
+  if (r.err) {
+    cliErr = String(r.stderr || r.err.message || 'ошибка');
+  } else {
+    const j = parseJson(r.stdout) || [];
+    for (const l of j) {
+      const item = {
+        name: l.library?.name || l.name || '',
+        version: l.library?.version || l.version || '',
+        author: l.library?.author || '',
+        sentence: l.library?.sentence || '',
+        category: l.library?.category || '',
+        source: 'cli',
+      };
+      const prev = byName.get(item.name.toLowerCase());
+      if (!prev) byName.set(item.name.toLowerCase(), item);
+      else {
+        // библиотека есть и в скетчбуке, и в реестре cli — объединяем, метка 'ide'
+        byName.set(item.name.toLowerCase(), {
+          ...prev,
+          version: prev.version || item.version,
+          author: prev.author || item.author,
+          sentence: prev.sentence || item.sentence,
+          category: prev.category || item.category,
+        });
+      }
+    }
+  }
+  const libs = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return { libs, err: libs.length ? null : cliErr };
 }
 
 export async function searchLibs(q) {
