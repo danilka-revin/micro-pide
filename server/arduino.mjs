@@ -372,12 +372,17 @@ export async function listPorts() {
   const r = await runCli(['board', 'list', '--format', 'json'], { timeout: 30_000 });
   if (r.err) return { err: String(r.stderr || r.err.message || 'ошибка'), ports: [] };
   const j = parseJson(r.stdout);
-  const ports = (j || []).map((p) => ({
-    address: p.address || p.port?.address || '',
-    protocol: p.protocol || p.port?.protocol || 'serial',
-    boardName: p.board_name || p.board?.name || '',
-    fqbn: p.fqbn || p.board?.fqbn || '',
-  }));
+  const ports = (j || []).map((p) => {
+    // matching_boards — что cli распознал на этом порту (для автовыбора)
+    const mb = p.matching_boards || p.matchingBoards || [];
+    const first = Array.isArray(mb) ? mb[0] : null;
+    return {
+      address: p.address || p.port?.address || '',
+      protocol: p.protocol || p.port?.protocol || 'serial',
+      boardName: p.board_name || p.board?.name || first?.name || '',
+      fqbn: p.fqbn || p.board?.fqbn || first?.fqbn || '',
+    };
+  });
   return { ports, err: null };
 }
 

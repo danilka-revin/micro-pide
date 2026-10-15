@@ -66,6 +66,12 @@ export default function App() {
   const [port, setPort] = useState(localStorage.getItem('micropide.port') || '');
   const [cliBusy, setCliBusy] = useState(false);
   const [hwKey, setHwKey] = useState(0);
+  // refs для автоопределения платы (актуальные значения внутри колбэков)
+  const portRef = useRef('');
+  const fqbnRef = useRef('');
+  const lastDetect = useRef('');
+  portRef.current = port;
+  fqbnRef.current = fqbn;
 
   // ---------------- панели ----------------
   const [sideTab, setSideTab] = useState<SideTab>('sketchbook');
@@ -121,9 +127,28 @@ export default function App() {
   const refreshPorts = useCallback(async () => {
     try {
       const r = await api.ports();
-      if (r.ok) setPorts(r.ports || []);
+      if (!r.ok) return;
+      setPorts(r.ports || []);
+      // автоопределение: если на каком-то порту видна плата — выбрать её самим
+      const detected = (r.ports || []).find((p) => p.boardName || p.fqbn);
+      const sig = detected ? `${detected.address}|${detected.boardName}|${detected.fqbn}` : '';
+      if (detected && sig !== lastDetect.current) {
+        lastDetect.current = sig;
+        const still = (r.ports || []).some((p) => p.address === portRef.current);
+        if (!portRef.current || !still) {
+          setPort(detected.address);
+          say(`Плата найдена: ${detected.boardName || 'устройство'} на ${detected.address}`);
+        }
+        if (!fqbnRef.current && detected.fqbn) {
+          setFqbn(detected.fqbn);
+          setBoardLabel(detected.boardName || '');
+          if (still) say(`Плата: ${detected.boardName || detected.fqbn} на ${detected.address}`);
+        }
+      } else if (!detected) {
+        lastDetect.current = '';
+      }
     } catch { /* ignore */ }
-  }, []);
+  }, [say]);
 
   const refreshBoards = useCallback(async () => {
     try {
@@ -784,6 +809,7 @@ export default function App() {
             <li><span className="kbd">Ctrl+N</span> — новый скетч</li>
             <li><span className="kbd">Ctrl+O</span> — открыть из скетчбука</li>
             <li><span className="kbd">Ctrl+F</span> — найти</li>
+            <li><span className="kbd">Ctrl+Space</span> — подсказки кода (стрелки + Tab)</li>
             <li><span className="kbd">Ctrl+/</span> — закомментировать строку</li>
             <li><span className="kbd">Ctrl+Shift+M</span> — монитор порта</li>
             <li><span className="kbd">Ctrl+,</span> — настройки</li>

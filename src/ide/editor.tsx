@@ -6,27 +6,37 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLi
 import { EditorState, Compartment, RangeSetBuilder, type Extension } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, search } from '@codemirror/search';
-import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
+import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
 import { bracketMatching, foldGutter, indentOnInput, indentUnit, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { cpp } from '@codemirror/lang-cpp';
+import { arduinoCompletion } from './arduinoComplete';
+import { ardTokens } from './ardTokens';
 import { tags as t } from '@lezer/highlight';
 
 /** Подсветка синтаксиса через переменные темы (работает во всех пресетах). */
 const microHighlight = HighlightStyle.define([
-  { tag: t.keyword, color: 'var(--tok-keyword)' },
-  { tag: [t.controlKeyword, t.controlOperator], color: 'var(--tok-keyword)' },
-  { tag: [t.typeName, t.className, t.standard(t.typeName)], color: 'var(--tok-type)' },
+  // управляющие конструкции — отдельный цвет
+  { tag: [t.controlKeyword, t.controlOperator], color: 'var(--tok-control)' },
+  // объявления: void/int/const/static/struct/new/return? нет — return в control
+  { tag: [t.keyword, t.modifier, t.definitionKeyword, t.self, t.standard(t.keyword)], color: 'var(--tok-keyword)' },
+  // типы и классы
+  { tag: [t.typeName, t.className, t.standard(t.typeName), t.namespace], color: 'var(--tok-type)' },
+  // функции
+  { tag: [t.function(t.variableName), t.function(t.propertyName)], color: 'var(--tok-func)' },
+  // препроцессор: #include, #define и макросы
+  { tag: [t.macroName, t.processingInstruction, t.meta], color: 'var(--tok-macro)' },
+  // данные
   { tag: t.string, color: 'var(--tok-string)' },
   { tag: t.number, color: 'var(--tok-number)' },
+  { tag: [t.bool, t.null, t.self], color: 'var(--tok-constant)' },
   { tag: [t.comment, t.lineComment, t.blockComment], color: 'var(--tok-comment)', fontStyle: 'italic' },
-  { tag: [t.function(t.variableName), t.function(t.propertyName)], color: 'var(--tok-func)' },
-  { tag: [t.macroName], color: 'var(--tok-macro)' },
-  { tag: [t.operator, t.operatorKeyword], color: 'var(--tok-op)' },
+  // операторы и пунктуация
+  { tag: [t.operator, t.operatorKeyword, t.compareOperator, t.logicOperator, t.arithmeticOperator, t.updateOperator, t.derefOperator], color: 'var(--tok-op)' },
+  { tag: t.punctuation, color: 'var(--tok-op)' },
+  // прочий текст
   { tag: [t.definition(t.variableName)], color: 'var(--text)' },
-  { tag: t.bool, color: 'var(--tok-number)' },
-  { tag: t.null, color: 'var(--tok-number)' },
   { tag: t.variableName, color: 'var(--text)' },
-  { tag: t.propertyName, color: 'var(--text)' },
+  { tag: t.propertyName, color: 'var(--text-2)' },
   { tag: t.heading, color: 'var(--tok-type)' },
 ]);
 
@@ -110,6 +120,9 @@ export function CodeEditor({
   useEffect(() => {
     if (!host.current) return;
     const shortcuts = keymap.of([
+      // Tab/Enter принимают подсказку автодополнения, стрелки ходят по списку
+      // (встроено в completionKeymap), Tab без списка — отступ, как обычно
+      { key: 'Tab', run: (v) => acceptCompletion(v) },
       { key: 'Mod-s', preventDefault: true, run: () => { cbRef.current.onSave?.(); return true; } },
       { key: 'Mod-r', preventDefault: true, run: () => { cbRef.current.onVerify?.(); return true; } },
       { key: 'Mod-u', preventDefault: true, run: () => { cbRef.current.onUpload?.(); return true; } },
@@ -127,7 +140,7 @@ export function CodeEditor({
       syntaxHighlighting(microHighlight, { fallback: true }),
       bracketMatching(),
       closeBrackets(),
-      autocompletion(),
+      autocompletion({ override: [arduinoCompletion], activateOnTyping: true, icons: true }),
       rectangularSelection(),
       crosshairCursor(),
       highlightActiveLine(),
@@ -142,6 +155,7 @@ export function CodeEditor({
         indentWithTab,
       ]),
       cpp(),
+      ardTokens,
       search({ top: true }),
       microTheme,
       fsComp.current.of(EditorView.theme({ '&': { fontSize: `${opts.fontSize}px` } })),

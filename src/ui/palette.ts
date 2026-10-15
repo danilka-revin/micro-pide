@@ -124,21 +124,26 @@ const OVERRIDE_VARS = [
   'text', 'text-2', 'muted', 'code-bg', 'info-bg', 'info-ink',
   'modal-veil', 'sw-line',
   'accent', 'accent-text', 'accent-ink', 'accent-soft', 'accent-line', 'accent-glow',
-  'tok-keyword', 'tok-type', 'tok-string', 'tok-number', 'tok-comment', 'tok-func', 'tok-macro', 'tok-op',
+  'tok-keyword', 'tok-control', 'tok-type', 'tok-string', 'tok-number', 'tok-comment',
+  'tok-func', 'tok-macro', 'tok-op', 'tok-constant', 'tok-arduino',
   'ed-sel', 'ed-caret', 'ed-line',
 ];
 
 /** Перекрыть цвета синтаксиса редактора под акцент/фон темы. */
 function applySyntaxColors(root: HTMLElement, accent: string, sf: string, tx: string, lightish: boolean): void {
   const dark = !lightish;
-  root.style.setProperty('--tok-keyword', mix(accent, dark ? '#ff9d5c' : '#b25309', 0.35));
-  root.style.setProperty('--tok-type', mix(accent, dark ? '#ffd97a' : '#8a6d00', 0.3));
-  root.style.setProperty('--tok-string', dark ? '#9ddc7a' : '#256029');
-  root.style.setProperty('--tok-number', dark ? '#6fd3ff' : '#0b5e87');
+  root.style.setProperty('--tok-keyword', mix(accent, dark ? '#d9a3ff' : '#8250df', 0.55));
+  root.style.setProperty('--tok-control', mix(accent, dark ? '#ff7a85' : '#cf222e', 0.5));
+  root.style.setProperty('--tok-type', mix(accent, dark ? '#ffd97a' : '#9a6700', 0.3));
+  root.style.setProperty('--tok-string', dark ? '#9ddc7a' : '#116329');
+  root.style.setProperty('--tok-number', mix(accent, dark ? '#ffab70' : '#953800', 0.35));
   root.style.setProperty('--tok-comment', mix(tx, sf, 0.55));
-  root.style.setProperty('--tok-func', dark ? '#67cdea' : '#0e6a8a');
-  root.style.setProperty('--tok-macro', dark ? '#d9a3ff' : '#6d28a8');
+  root.style.setProperty('--tok-func', mix(accent, dark ? '#6fb7ff' : '#0550ae', 0.4));
+  root.style.setProperty('--tok-macro', mix(accent, dark ? '#ff9d5c' : '#b25309', 0.35));
   root.style.setProperty('--tok-op', mix(tx, sf, 0.16));
+  const constColor = mix(accent, dark ? '#4fd6c2' : '#0a7c73', 0.3);
+  root.style.setProperty('--tok-constant', constColor);
+  root.style.setProperty('--tok-arduino', constColor);
   root.style.setProperty('--ed-sel', rgba(accent, lightish ? 0.2 : 0.22));
   root.style.setProperty('--ed-caret', readable(accent, sf, 3.2));
   root.style.setProperty('--ed-line', rgba(tx, lightish ? 0.035 : 0.035));

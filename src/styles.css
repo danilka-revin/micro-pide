@@ -37,15 +37,18 @@
   --modal-veil: rgba(5, 8, 12, .72);
   --shadow: 0 22px 60px rgba(0, 0, 0, .6);
   --sw-line: rgba(255, 255, 255, .25);
-  /* цвета редактора кода (синтаксис C++), тёмная база */
-  --tok-keyword: #ff9d5c;
-  --tok-type: #ffc233;
+  /* цвета редактора кода (синтаксис C++ + Arduino), тёмная база */
+  --tok-keyword: #d9a3ff;   /* объявления: void, int, const, static */
+  --tok-control: #ff7a85;   /* if, for, while, return */
+  --tok-type: #ffc233;      /* типы и классы */
+  --tok-func: #6fb7ff;      /* функции */
+  --tok-constant: #4fd6c2;  /* HIGH, LOW, INPUT… */
+  --tok-arduino: #4fd6c2;   /* объекты: Serial, SPI, Wire */
   --tok-string: #9ddc7a;
-  --tok-number: #6fd3ff;
+  --tok-number: #ffab70;
   --tok-comment: #6b7684;
-  --tok-func: #67cdea;
-  --tok-macro: #d9a3ff;
-  --tok-op: #c2cad3;
+  --tok-macro: #ff9d5c;     /* #include, #define */
+  --tok-op: #9fb3c8;
   --ed-sel: rgba(255, 194, 51, .22);
   --ed-caret: var(--accent);
   --ed-line: rgba(255, 255, 255, .035);
@@ -81,14 +84,17 @@
   --modal-veil: rgba(30, 35, 42, .45);
   --shadow: 0 22px 50px rgba(25, 32, 42, .18);
   --sw-line: rgba(20, 30, 40, .25);
-  --tok-keyword: #b25309;
-  --tok-type: #8a6d00;
-  --tok-string: #256029;
-  --tok-number: #0b5e87;
+  --tok-keyword: #8250df;
+  --tok-control: #cf222e;
+  --tok-type: #9a6700;
+  --tok-func: #0550ae;
+  --tok-constant: #0a7c73;
+  --tok-arduino: #0a7c73;
+  --tok-string: #116329;
+  --tok-number: #953800;
   --tok-comment: #7a828c;
-  --tok-func: #0e6a8a;
-  --tok-macro: #6d28a8;
-  --tok-op: #39424d;
+  --tok-macro: #b25309;
+  --tok-op: #57606a;
   --ed-sel: rgba(224, 142, 0, .2);
   --ed-caret: var(--accent-text);
   --ed-line: rgba(20, 30, 40, .035);
@@ -602,6 +608,49 @@ textarea.txt { height: auto; padding: 6px 9px; resize: vertical; font: 12px 'Jet
 .updp-mini-fill { display: block; height: 100%; background: var(--accent); transition: width .35s ease; }
 .updp-st { text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
 
+/* ---------- Arduino-токены (плагин ardTokens) ---------- */
+.cm-editor .tok-ard-const { color: var(--tok-constant); }
+.cm-editor .tok-ard-obj { color: var(--tok-arduino); font-weight: 600; }
+.cm-editor .tok-ard-fn { color: var(--tok-func); }
+
+/* ---------- автодополнение (как в PyCharm: стрелки, Tab/Enter) ---------- */
+.cm-tooltip.cm-tooltip-autocomplete {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  box-shadow: var(--shadow); overflow: hidden; padding: 3px;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul {
+  font: 12.5px/1.55 'JetBrains Mono', ui-monospace, monospace;
+  max-height: 262px; min-width: 280px; margin: 0; padding: 2px;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 8px; border-radius: 7px; cursor: pointer; color: var(--text-2);
+  overflow: hidden; white-space: nowrap;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--accent-soft); color: var(--text);
+}
+.cm-completionLabel { color: inherit; font-weight: 500; }
+.cm-completionDetail {
+  color: var(--muted); font-size: 10.5px; font-style: normal;
+  margin-left: auto; padding-left: 14px; overflow: hidden; text-overflow: ellipsis;
+}
+.cm-completionIcon { font-family: inherit; opacity: 1; width: 1.2em; text-align: center; }
+.cm-completionIcon::after { color: var(--muted); }
+.cm-completionIcon-function::after { content: 'ƒ'; color: var(--tok-func); }
+.cm-completionIcon-method::after { content: 'ƒ'; color: var(--tok-arduino); }
+.cm-completionIcon-class::after { content: '◈'; color: var(--tok-type); }
+.cm-completionIcon-type::after { content: '◈'; color: var(--tok-type); }
+.cm-completionIcon-constant::after { content: '◆'; color: var(--tok-constant); }
+.cm-completionIcon-keyword::after { content: 'K'; color: var(--tok-keyword); }
+.cm-completionIcon-variable::after { content: 'x'; color: var(--text-2); }
+.cm-completionIcon-text::after { content: '≡'; color: var(--muted); }
+.cm-completionInfo {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 11px; max-width: 340px; max-height: 260px; overflow-y: auto;
+  font: 11.5px/1.5 Inter, 'Segoe UI', system-ui, sans-serif; color: var(--text-2);
+  user-select: text;
+}
 /* ---------- скроллбары ---------- */
 * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 *::-webkit-scrollbar { width: 9px; height: 9px; }
