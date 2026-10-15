@@ -18,8 +18,14 @@ import { api, type CliInfo, type SerialPortInfo, type SketchFile, type SystemInf
 import { ConsoleView, pushLine, type ConsoleLine } from './ide/console';
 import { SerialMonitor, SerialPlotter } from './ide/serial';
 import { SIDE_TABS, SketchbookPanel, ExamplesPanel, LibsPanel, BoardsPanel, type SideTab } from './ide/panels';
+import { AnalysisPanel } from './ide/lab';
+import { HistoryPanel, BuildStats } from './ide/history';
+import { TestsPanel, SimDialog } from './ide/tests';
+import { TelemetryPanel } from './ide/telemetry';
+import { VaultPanel } from './ide/vault';
+import { ReferencePanel } from './ide/reference';
 
-type BottomTab = 'console' | 'serial' | 'plot';
+type BottomTab = 'console' | 'serial' | 'plot' | 'analysis' | 'telemetry' | 'tests' | 'history';
 
 interface OpenFile { path: string; content: string; dirty: boolean }
 
@@ -80,6 +86,13 @@ export default function App() {
   const [bottomMax, setBottomMax] = useState(false);
   const [conLines, setConLines] = useState<ConsoleLine[]>([]);
   const [toast, setToast] = useState('');
+  const [gotoLine, setGotoLine] = useState<{ file: string; line: number; token: number } | null>(null);
+  const [simOpen, setSimOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [matrixOpen, setMatrixOpen] = useState(false);
+  const [mapData, setMapData] = useState<any>(null);
+  const [matrixPicked, setMatrixPicked] = useState<string[]>([]);
+  const [matrixRows, setMatrixRows] = useState<any[]>([]);
 
   // ---------------- busy-состояния ----------------
   const [building, setBuilding] = useState(false);
@@ -93,6 +106,29 @@ export default function App() {
 
   const edView = useRef<EditorView | null>(null);
   const nameInput = useRef<HTMLInputElement>(null);
+
+  // -------- свои подсистемы: файлы для API, переходы, вставка кода --------
+  const sketchFiles = useCallback((): SketchFile[] => files.map((f) => ({ path: f.path, content: f.content })), [files]);
+
+  const applyFiles = useCallback((next: SketchFile[]) => {
+    setFiles(next.map((f) => ({ path: f.path, content: f.content, dirty: true })));
+    setActiveFile((i) => Math.min(i, Math.max(0, next.length - 1)));
+  }, []);
+
+  const addOrReplaceFile = useCallback((path: string, content: string) => {
+    setFiles((cur) => {
+      const i = cur.findIndex((f) => f.path === path);
+      if (i >= 0) return cur.map((f, k) => (k === i ? { ...f, content, dirty: true } : f));
+      return [...cur, { path, content, dirty: true }];
+    });
+  }, []);
+
+  const goToLine = useCallback((file: string, line: number) => {
+    const idx = files.findIndex((f) => f.path === file || f.path.endsWith('/' + file));
+    if (idx >= 0 && idx !== activeFile) setActiveFile(idx);
+    setGotoLine({ file: files[idx]?.path || file, line, token: Date.now() });
+    setBottomOpen(true);
+  }, [files, activeFile]);
 
   // ---------------- тема ----------------
   useEffect(() => {
@@ -115,6 +151,14 @@ export default function App() {
     setToast(s);
     window.setTimeout(() => setToast((cur) => (cur === s ? '' : cur)), 5000);
   }, []);
+
+  const insertIntoEditor = useCallback((code: string) => {
+    const v = edView.current;
+    if (!v) { log('Откройте файл скетча, чтобы вставить код.', 'err'); return; }
+    const pos = v.state.selection.main.from;
+    v.dispatch({ changes: { from: pos, insert: code }, selection: { anchor: pos + code.length } });
+    v.focus();
+  }, [log]);
 
   // ---------------- cli / порты / платы ----------------
   const refreshCli = useCallback(async () => {
@@ -305,11 +349,7 @@ export default function App() {
   const doVerify = useCallback(async () => {
     if (building || uploading) return;
     if (!needBoard()) return;
-    if (!cli?.ok) {
-      setBottomTab('console'); setBottomOpen(true);
-      log('✗ arduino-cli не найден. Установите его в панели «Платы» (кнопка «Установить arduino-cli»).', 'err');
-      return;
-    }
+    if (!cli?.ok) log('arduino-cli недоступен — собираю своим движком MicroPIDE (свой препроцессор и рецепты platform.txt).', 'hl');
     setBuilding(true);
     setBottomTab('console');
     setBottomOpen(true);
@@ -400,6 +440,32 @@ export default function App() {
     return () => window.removeEventListener('keydown', h);
   }, [doVerify, doUpload, doSave, sketchbook.length, set, prefs.showSidebar, settingsOpen]);
 
+  const openMap = useCallback(async () => {
+    setMapOpen(true);
+    setMapData({ loading: true });
+    try {
+      const r = await api.buildMap(sketchName);
+      setMapData(r);
+    } catch (e) {
+      setMapData({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }, [sketchName]);
+
+  const runMatrix = useCallback(async () => {
+    if (!matrixPicked.length) { say('Выберите хотя бы одну плату'); return; }
+    setBottomTab('console');
+    setBottomOpen(true);
+    setMatrixRows([]);
+    log(`— Сборка «${sketchName}» под ${matrixPicked.length} плат(ы) —`, 'hl');
+    try {
+      const r = await api.buildMatrix({ name: sketchName, files: sketchFiles(), fqbns: matrixPicked }, (line) => log(line));
+      setMatrixRows(r?.rows || []);
+      say(r?.ok ? 'Собрано для всех выбранных плат' : 'Часть плат не собралась — смотрите вывод');
+    } catch (e) {
+      log('✗ ' + (e instanceof Error ? e.message : String(e)), 'err');
+    }
+  }, [matrixPicked, sketchName, sketchFiles, log, say]);
+
   // ---------------- меню ----------------
   const fileMenu: MenuEntry[] = [
     { icon: 'new', label: 'Новый скетч', kbd: 'Ctrl+N', onClick: () => { setDlgText('Sketch' + (sketchbook.length + 1)); setDlg('new'); } },
@@ -431,7 +497,16 @@ export default function App() {
   ];
 
   const toolsMenu: MenuEntry[] = [
+    { icon: 'bolt', label: 'Проверить логику без платы…', onClick: () => setSimOpen(true) },
+    { icon: 'find', label: 'Анализ скетча и карта пинов', onClick: () => { setBottomTab('analysis'); setBottomOpen(true); } },
+    { icon: 'verify', label: 'Тесты на железе и в симуляторе', onClick: () => { setBottomTab('tests'); setBottomOpen(true); } },
+    { icon: 'clock', label: 'История версий и сборок', onClick: () => { setBottomTab('history'); setBottomOpen(true); } },
+    { icon: 'info', label: 'Карта памяти (символы .elf)', onClick: () => { void openMap(); } },
+    { icon: 'board', label: 'Сборка под несколько плат…', onClick: () => { setMatrixRows([]); setMatrixPicked(fqbn ? [fqbn] : []); setMatrixOpen(true); } },
+    { icon: 'inventory', label: 'Автономный режим и склад', onClick: () => { setSideTab('vault'); if (!prefs.showSidebar) set({ showSidebar: true }); } },
+    { sep: true },
     { icon: 'monitor', label: 'Монитор порта', kbd: 'Ctrl+Shift+M', onClick: () => { setBottomTab('serial'); setBottomOpen(true); } },
+    { icon: 'plot', label: 'Телеметрия MicroTelem', onClick: () => { setBottomTab('telemetry'); setBottomOpen(true); } },
     { icon: 'plot', label: 'Построитель графиков', onClick: () => { setBottomTab('plot'); setBottomOpen(true); } },
     { icon: 'terminal', label: 'Вывод', onClick: () => { setBottomTab('console'); setBottomOpen(true); } },
     { sep: true },
@@ -441,6 +516,9 @@ export default function App() {
   ];
 
   const helpMenu: MenuEntry[] = [
+    { icon: 'book', label: 'Справочник по API (офлайн)', onClick: () => { setSideTab('reference'); if (!prefs.showSidebar) set({ showSidebar: true }); } },
+    { icon: 'book', label: 'Документация по скетчу', onClick: () => { setBottomTab('analysis'); setBottomOpen(true); } },
+    { sep: true },
     { icon: 'info', label: 'О программе', onClick: () => setDlg('about') },
     { icon: 'info', label: 'Горячие клавиши', onClick: () => setDlg('hotkeys') },
     { sep: true },
@@ -602,6 +680,22 @@ export default function App() {
               {sideTab === 'libs' && (
                 <LibsPanel cli={cli} onToast={say} refreshKey={hwKey + sketchbook.length} />
               )}
+              {sideTab === 'vault' && (
+                <VaultPanel
+                  active={sideTab === 'vault'}
+                  fqbn={fqbn}
+                  onPickBoard={(label, f) => { setFqbn(f); setBoardLabel(label); say(`Плата: ${label}`); }}
+                  onToast={say}
+                  onLog={(l) => log(l)}
+                />
+              )}
+              {sideTab === 'reference' && (
+                <ReferencePanel
+                  active={sideTab === 'reference'}
+                  onInsert={(code) => insertIntoEditor(code)}
+                  onToast={say}
+                />
+              )}
               {sideTab === 'boards' && (
                 <BoardsPanel
                   cli={cli}
@@ -655,6 +749,7 @@ export default function App() {
               onVerify={() => void doVerify()}
               onUpload={() => void doUpload()}
               onReady={(v) => { edView.current = v ?? null; }}
+              goto={gotoLine}
             />
           ) : (
             <div className="ed-wrap"><div className="empty">Нет открытых файлов</div></div>
@@ -671,6 +766,18 @@ export default function App() {
               </button>
               <button className={'bottom-tab' + (bottomTab === 'plot' ? ' active' : '')} onClick={() => { setBottomTab('plot'); setBottomOpen(true); }}>
                 <Ic n="plot" size={14} />Графики
+              </button>
+              <button className={'bottom-tab' + (bottomTab === 'telemetry' ? ' active' : '')} onClick={() => { setBottomTab('telemetry'); setBottomOpen(true); }}>
+                <Ic n="plot" size={14} />Телеметрия
+              </button>
+              <button className={'bottom-tab' + (bottomTab === 'analysis' ? ' active' : '')} onClick={() => { setBottomTab('analysis'); setBottomOpen(true); }}>
+                <Ic n="find" size={14} />Анализ
+              </button>
+              <button className={'bottom-tab' + (bottomTab === 'tests' ? ' active' : '')} onClick={() => { setBottomTab('tests'); setBottomOpen(true); }}>
+                <Ic n="check" size={14} />Тесты
+              </button>
+              <button className={'bottom-tab' + (bottomTab === 'history' ? ' active' : '')} onClick={() => { setBottomTab('history'); setBottomOpen(true); }}>
+                <Ic n="clock" size={14} />История
               </button>
               <div className="bottom-tools">
                 <button className="tb-btn" title={bottomMax ? 'Восстановить размер' : 'На весь экран'} onClick={() => setBottomMax((v) => !v)}>
@@ -703,6 +810,57 @@ export default function App() {
                 <SerialPlotter ports={ports} prefs={prefs} set={set} port={port} setPort={setPort} active={bottomTab === 'plot' && bottomOpen} />
               </div>
             )}
+            {bottomOpen && bottomTab === 'telemetry' && (
+              <div className="bottom-body">
+                <TelemetryPanel
+                  active={bottomTab === 'telemetry' && bottomOpen}
+                  ports={ports}
+                  port={port}
+                  setPort={setPort}
+                  prefs={prefs}
+                  onLog={(t, k) => log(t, k)}
+                />
+              </div>
+            )}
+            {bottomOpen && bottomTab === 'analysis' && (
+              <div className="bottom-body">
+                <AnalysisPanel
+                  active={bottomTab === 'analysis' && bottomOpen}
+                  files={sketchFiles()}
+                  fqbn={fqbn || 'micropide:sim:sim'}
+                  boardLabel={boardLabel}
+                  baud={prefs.serialBaud}
+                  sketchName={sketchName}
+                  onToast={say}
+                  onGoto={goToLine}
+                  onApplyFiles={(nf) => { applyFiles(nf); say('Правка применена'); }}
+                  onAddFile={(p, c) => { addOrReplaceFile(p, c); say(`Файл ${p} добавлен в скетч`); }}
+                />
+              </div>
+            )}
+            {bottomOpen && bottomTab === 'tests' && (
+              <div className="bottom-body">
+                <TestsPanel
+                  active={bottomTab === 'tests' && bottomOpen}
+                  files={sketchFiles()}
+                  sketchName={sketchName}
+                  port={port}
+                  onToast={say}
+                  onLog={(l) => log(l)}
+                />
+              </div>
+            )}
+            {bottomOpen && bottomTab === 'history' && (
+              <div className="bottom-body">
+                <HistoryPanel
+                  active={bottomTab === 'history' && bottomOpen}
+                  sketchName={loadedFrom || sketchName}
+                  files={sketchFiles()}
+                  onRestore={(nf) => { applyFiles(nf); say('Версия восстановлена'); }}
+                  onToast={say}
+                />
+              </div>
+            )}
           </section>
         </main>
       </div>
@@ -712,7 +870,7 @@ export default function App() {
         <footer className="status">
           <span className="lg">
             <span className={'pulse ' + (cli ? (cli.ok ? '' : 'err') : 'off')} />
-            {cli === null ? 'сервер недоступен' : cli.ok ? `arduino-cli ${cli.version}` : 'arduino-cli не найден'}
+            {cli === null ? 'сервер недоступен' : cli.ok ? `arduino-cli ${cli.version}` : 'свой движок MicroPIDE (arduino-cli нет)'}
           </span>
           <span title={fqbn}>Плата: <b>{boardValue || '—'}</b></span>
           <span>Порт: <b>{port || '—'}</b></span>
@@ -830,6 +988,90 @@ export default function App() {
           }}
           onClose={() => setConfirmDel('')}
         />
+      )}
+
+      {simOpen && (
+        <SimDialog
+          open={simOpen}
+          files={sketchFiles()}
+          sketchName={sketchName}
+          onClose={() => setSimOpen(false)}
+          onLog={(l) => log(l)}
+          onToast={say}
+        />
+      )}
+
+      {mapOpen && (
+        <Modal
+          title="Карта памяти"
+          onClose={() => setMapOpen(false)}
+          foot={<button className="btn primary" onClick={() => setMapOpen(false)}>Закрыть</button>}
+        >
+          {mapData?.loading && <p>Читаю .elf последней сборки…</p>}
+          {mapData && !mapData.loading && !mapData.ok && (
+            <p className="hint">Не получилось: {mapData.error || 'неизвестная причина'}</p>
+          )}
+          {mapData?.ok && (
+            <>
+              <div className="row">
+                {Object.entries(mapData.bySection || {}).map(([k, v]) => (
+                  <span key={k} className="badge">{k}: {String(v)} Б</span>
+                ))}
+                <span className="badge">{mapData.fqbn}</span>
+              </div>
+              <table className="tbl">
+                <thead><tr><th>Размер</th><th>Секция</th><th>Символ</th></tr></thead>
+                <tbody>
+                  {(mapData.top || mapData.all || []).slice(0, 40).map((x: any, i: number) => (
+                    <tr key={i}><td>{x.size}</td><td className="dim">{x.section}</td><td className="mono">{x.name}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="hint">Топ символов по размеру: сразу видно, что «съело» флеш и ОЗУ.</p>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {matrixOpen && (
+        <Modal
+          title="Сборка под несколько плат"
+          onClose={() => setMatrixOpen(false)}
+          foot={<>
+            <button className="btn" onClick={() => setMatrixOpen(false)}>Закрыть</button>
+            <button className="btn primary" onClick={() => void runMatrix()}>Собрать ({matrixPicked.length})</button>
+          </>}
+        >
+          <p className="hint">Один и тот же скетч собирается под каждую выбранную плату своим движком — видно, где он не влезает по памяти.</p>
+          <div className="mtrx">
+            {boards.map((b) => (
+              <label key={b.fqbn} className="chk">
+                <input
+                  type="checkbox"
+                  checked={matrixPicked.includes(b.fqbn)}
+                  onChange={(e) => setMatrixPicked((cur) => (e.target.checked ? [...cur, b.fqbn] : cur.filter((x) => x !== b.fqbn)))}
+                />
+                {b.name}
+              </label>
+            ))}
+            {!boards.length && <p className="hint">Платы не загружены — откройте панель «Платы» или «Склад».</p>}
+          </div>
+          {!!matrixRows.length && (
+            <table className="tbl">
+              <thead><tr><th>Плата</th><th>Флеш</th><th>ОЗУ</th><th></th></tr></thead>
+              <tbody>
+                {matrixRows.map((r) => (
+                  <tr key={r.fqbn} className={r.ok ? '' : 'bad-row'}>
+                    <td>{r.name}</td>
+                    <td>{r.flash != null ? `${r.flash} Б${r.pctFlash != null ? ` (${r.pctFlash}%)` : ''}` : '—'}</td>
+                    <td>{r.ram != null ? `${r.ram} Б${r.pctRam != null ? ` (${r.pctRam}%)` : ''}` : '—'}</td>
+                    <td>{r.ok ? '✓' : '✗ ' + (r.error || '')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Modal>
       )}
 
       {settingsOpen && (

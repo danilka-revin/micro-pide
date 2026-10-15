@@ -8,13 +8,15 @@ import { EXAMPLE_GROUPS } from './examples';
 import { Ic } from '../ui/icons';
 import { ConfirmDialog, fmt } from '../ui/widgets';
 
-export type SideTab = 'sketchbook' | 'examples' | 'libs' | 'boards';
+export type SideTab = 'sketchbook' | 'examples' | 'libs' | 'boards' | 'vault' | 'reference';
 
 export const SIDE_TABS: { id: SideTab; icon: string; label: string }[] = [
   { id: 'sketchbook', icon: 'sketchbook', label: 'Скетчи' },
   { id: 'examples', icon: 'examples', label: 'Примеры' },
   { id: 'libs', icon: 'lib', label: 'Библиотеки' },
   { id: 'boards', icon: 'board', label: 'Платы' },
+  { id: 'vault', icon: 'inventory', label: 'Склад' },
+  { id: 'reference', icon: 'book', label: 'Справка' },
 ];
 
 // ---------------------------------------------------------------- скетчбук

@@ -54,6 +54,12 @@ import {
 } from './sketches.mjs';
 import { Updater } from './updater.mjs';
 import { SerialBridge } from './serialbridge.mjs';
+// свои подсистемы MicroPIDE: автономность, анализ, история, симулятор, тесты
+import { extraRoutes, mergeBoards, buildRegistry } from './routes.mjs';
+import { buildWithOwnEngine, uploadWithOwnEngine, parseSizes, sizeReport, resolveCore } from './buildcore.mjs';
+import { snapshotIfChanged, recordBuild } from './history.mjs';
+import { registerInstalled } from './offline.mjs';
+import { PLATFORMS, allBoards as allBoardsList } from './boarddb.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, '..');
@@ -83,6 +89,7 @@ const MIME = {
 ensureSketchbook();
 const updater = new Updater(APP_DIR, ROOT);
 const serial = new SerialBridge();
+const registry = buildRegistry();
 
 // ---------------------------------------------------------------- мелочи http
 
@@ -158,32 +165,80 @@ function serveStatic(req, res, urlPath) {
 
 // ---------------------------------------------------------------- build/upload
 
-async function handleBuild(req, res, body) {
+/**
+ * Сборка: сперва arduino-cli (если он есть), затем — наш собственный сборщик.
+ * Так MicroPIDE работает даже когда серверы Arduino и сама утилита недоступны.
+ */
+async function handleBuild(req, res, body, signal) {
   const out = makeStream(res);
+  const lines = [];
+  const push = (l) => { lines.push(l); out.write(l); };
+  const t0 = Date.now();
+  let sizes = null;
   try {
     const name = String(body.name || '').trim();
     if (!name) throw new Error('Не указан скетч');
     const fqbn = String(body.fqbn || '').trim();
     if (!fqbn) throw new Error('Не выбрана плата (FQBN)');
-    // сохраняем файлы перед сборкой (как «Сохранить» в Arduino IDE)
     const files = normalizeFiles(body.files || []);
     writeSketch(name, files);
+    try { snapshotIfChanged(name, files, { reason: 'build', fqbn }); } catch { /* история не критична */ }
     const dir = sketchPath(name);
-    out.write(`Компиляция ${name} для ${fqbn}…`);
-    const args = ['compile', '--fqbn', fqbn, '--format', 'text'];
-    if (body.verbose) args.push('--verbose');
-    args.push(dir);
-    const r = await streamCli(args, (line) => out.write(line), req);
-    if (r.code === 0) out.write('✓ Компиляция успешно завершена');
-    else out.write('✗ Ошибка компиляции: ' + (r.err?.message || 'см. вывод выше'));
+    const cli = await findCli();
+    let ok = false;
+    let via = '';
+    if (cli.ok) {
+      push(`Компиляция ${name} для ${fqbn}… (arduino-cli)`);
+      const args = ['compile', '--fqbn', fqbn, '--format', 'text'];
+      if (body.verbose) args.push('--verbose');
+      args.push(dir);
+      const r = await streamCli(args, (line) => push(line), signal);
+      ok = r.code === 0;
+      via = 'arduino-cli';
+      if (!ok) push('✗ arduino-cli: ' + (r.err?.message || 'см. вывод выше'));
+    }
+    const needOwn = !cli.ok || !ok;
+    if (needOwn) {
+      push('');
+      push(cli.ok
+        ? 'Пробую свой сборщик MicroPIDE (свои рецепты, свой препроцессор скетча)…'
+        : '— arduino-cli не найден: собираю своим сборщиком MicroPIDE —');
+      const own = await buildWithOwnEngine({ name, fqbn, files, onLine: push, verbose: !!body.verbose, signal });
+      if (own.ok) {
+        ok = true;
+        via = 'MicroPIDE';
+        sizes = own.sizes;
+        registry.save({ name, fqbn, ok, elf: own.elf, hex: own.hex, bin: own.bin, sizes: own.sizes, ms: own.ms, engine: 'own' });
+        push('✓ Сборка выполнена своим движком MicroPIDE');
+      } else if (!cli.ok) {
+        push('✗ ' + own.error);
+      } else {
+        push('(свой сборщик тоже не смог: ' + own.error + ')');
+      }
+    }
+    if (!sizes) {
+      const parsed = parseSizes(lines.join('\n'));
+      if (parsed.flash != null || parsed.ram != null) sizes = sizeReport({ ...parsed, board: fqbn });
+    }
+    for (const w of sizes?.warns || []) push('⚠ ' + w);
+    try {
+      recordBuild({
+        name, fqbn, ok, flash: sizes?.flash, ram: sizes?.ram, ms: Date.now() - t0,
+        kind: 'build', via, error: ok ? '' : (lines.filter((l) => l.startsWith('✗')).slice(-1)[0] || 'ошибка сборки'),
+      });
+    } catch { /* ignore */ }
   } catch (e) {
     out.write('✗ ' + (e?.message || String(e)));
   }
   out.end();
 }
 
-async function handleUpload(req, res, body) {
+/** Прошивка: arduino-cli, а если его нет — своя сборка + avrdude/рецепт платформы. */
+async function handleUpload(req, res, body, signal) {
   const out = makeStream(res);
+  const lines = [];
+  const push = (l) => { lines.push(l); out.write(l); };
+  const t0 = Date.now();
   try {
     const name = String(body.name || '').trim();
     if (!name) throw new Error('Не указан скетч');
@@ -193,28 +248,60 @@ async function handleUpload(req, res, body) {
     if (!port) throw new Error('Не выбран порт');
     const files = normalizeFiles(body.files || []);
     writeSketch(name, files);
+    try { snapshotIfChanged(name, files, { reason: 'upload', fqbn }); } catch { /* ignore */ }
     const dir = sketchPath(name);
-    out.write(`Сборка и прошивка ${name} → ${port} (${fqbn})…`);
-    const cargs = ['compile', '--fqbn', fqbn, '--format', 'text'];
-    if (body.verbose) cargs.push('--verbose');
-    cargs.push(dir);
-    const c = await streamCli(cargs, (line) => out.write(line), req);
-    if (c.code !== 0) {
-      out.write('✗ Ошибка компиляции: ' + (c.err?.message || 'см. вывод выше'));
-      out.end();
-      return;
-    }
-    // перед прошивкой закрываем монитор порта — порт занят
     if (serial.isOpen && serial.port === port) {
       serial.close();
-      out.write('(монитор порта закрыт на время прошивки)');
+      push('(монитор порта закрыт на время прошивки)');
     }
-    const uargs = ['upload', '-p', port, '--fqbn', fqbn, '--format', 'text'];
-    if (body.verbose) uargs.push('--verbose');
-    uargs.push(dir);
-    const u = await streamCli(uargs, (line) => out.write(line), req);
-    if (u.code === 0) out.write('✓ Прошивка завершена');
-    else out.write('✗ Ошибка прошивки: ' + (u.err?.message || 'см. вывод выше'));
+    const cli = await findCli();
+    let ok = false;
+    let via = '';
+    let sizes = null;
+    if (cli.ok) {
+      push(`Сборка и прошивка ${name} → ${port} (${fqbn})… (arduino-cli)`);
+      const cargs = ['compile', '--fqbn', fqbn, '--format', 'text'];
+      if (body.verbose) cargs.push('--verbose');
+      cargs.push(dir);
+      const c = await streamCli(cargs, (line) => push(line), signal);
+      sizes = sizeReport({ ...parseSizes(lines.join('\n')), board: fqbn });
+      if (c.code === 0) {
+        const uargs = ['upload', '-p', port, '--fqbn', fqbn, '--format', 'text'];
+        if (body.verbose) uargs.push('--verbose');
+        uargs.push(dir);
+        const u = await streamCli(uargs, (line) => push(line), signal);
+        ok = u.code === 0;
+        via = 'arduino-cli';
+        if (!ok) push('✗ arduino-cli: ' + (u.err?.message || 'см. вывод выше'));
+      } else {
+        push('✗ arduino-cli не смог собрать скетч');
+      }
+    }
+    if (!cli.ok || !ok) {
+      push('');
+      push(cli.ok ? 'Пробую свою прошивку MicroPIDE…' : '— arduino-cli не найден: собираю и прошиваю сам —');
+      const own = await buildWithOwnEngine({ name, fqbn, files, onLine: push, verbose: !!body.verbose, signal });
+      if (!own.ok) {
+        push('✗ ' + own.error);
+      } else {
+        sizes = own.sizes || sizes;
+        registry.save({ name, fqbn, ok: true, elf: own.elf, hex: own.hex, bin: own.bin, sizes: own.sizes, ms: own.ms, engine: 'own' });
+        const up = await uploadWithOwnEngine({
+          fqbn, port, hex: own.hex, elf: own.elf, bin: own.bin, name,
+          onLine: push, verbose: !!body.verbose, signal,
+        });
+        ok = up.ok;
+        via = up.via || 'MicroPIDE';
+        push(ok ? '✓ Прошивка завершена (свой движок)' : '✗ ' + up.error);
+      }
+    }
+    for (const w of sizes?.warns || []) push('⚠ ' + w);
+    try {
+      recordBuild({
+        name, fqbn, ok, flash: sizes?.flash, ram: sizes?.ram, ms: Date.now() - t0,
+        kind: 'upload', via, error: ok ? '' : (lines.filter((l) => l.startsWith('✗')).slice(-1)[0] || 'ошибка прошивки'),
+      });
+    } catch { /* ignore */ }
   } catch (e) {
     out.write('✗ ' + (e?.message || String(e)));
   }
@@ -272,6 +359,10 @@ async function callLLM({ key, provider, task }) {
 async function api(req, res, url) {
   const path = url.pathname;
   const q = url.searchParams;
+  // отмена длинных операций (сборка/тесты) при закрытии соединения
+  const ac = new AbortController();
+  req.on('close', () => ac.abort());
+  const ctx = { sendJson, readBody, makeStream, serial, registry, signal: ac.signal };
 
   // ---------- cli ----------
   if (req.method === 'GET' && path === '/api/cli') {
@@ -295,7 +386,25 @@ async function api(req, res, url) {
   }
   if (req.method === 'GET' && path === '/api/cores') {
     const r = await listCores();
-    return sendJson(res, 200, { ok: !r.err, err: r.err, cores: r.cores });
+    // дополняем список нашими платформами: их видно даже без сети и без cli
+    const cores = [...(r.cores || [])];
+    for (const p of PLATFORMS) {
+      const mine = allBoardsList().filter((b) => b.fqbn.startsWith(p.id + ':'));
+      const ex = cores.find((c) => c.id === p.id);
+      if (ex) {
+        if (!ex.boards?.length) ex.boards = mine.slice(0, 8).map((b) => ({ name: b.name, fqbn: b.fqbn }));
+        ex.micropide = { urls: p.url ? [p.url, p.mirror].filter(Boolean) : [], boards: mine.length, size: p.size };
+        continue;
+      }
+      const core = resolveCore((mine[0] || { fqbn: p.id + ':x' }).fqbn);
+      cores.push({
+        id: p.id, name: p.name, version: p.version, installed: core.ok ? core.version : null,
+        source: core.ok ? 'micropide' : 'catalog', via: 'каталог MicroPIDE',
+        boards: mine.slice(0, 8).map((b) => ({ name: b.name, fqbn: b.fqbn })),
+        micropide: { urls: [p.url, p.mirror].filter(Boolean), boards: mine.length, size: p.size },
+      });
+    }
+    return sendJson(res, 200, { ok: true, err: r.err, cores, via: 'arduino-cli + каталог MicroPIDE' });
   }
   if (req.method === 'GET' && path === '/api/cores/search') {
     const r = await searchCores(q.get('q') || '');
@@ -318,7 +427,8 @@ async function api(req, res, url) {
   }
   if (req.method === 'GET' && path === '/api/boards') {
     const r = await listAllBoards();
-    return sendJson(res, 200, { ok: !r.err, err: r.err, boards: r.boards });
+    // к платам arduino-cli добавляем свой встроенный каталог: он есть всегда
+    return sendJson(res, 200, { ok: true, err: r.err, boards: mergeBoards(r.boards || []) });
   }
 
   // ---------- библиотеки ----------
@@ -353,11 +463,11 @@ async function api(req, res, url) {
   // ---------- сборка и прошивка ----------
   if (req.method === 'POST' && path === '/api/build') {
     const body = await readBody(req);
-    return handleBuild(req, res, body);
+    return handleBuild(req, res, body, ac.signal);
   }
   if (req.method === 'POST' && path === '/api/upload') {
     const body = await readBody(req);
-    return handleUpload(req, res, body);
+    return handleUpload(req, res, body, ac.signal);
   }
 
   // ---------- монитор порта ----------
@@ -467,7 +577,7 @@ async function api(req, res, url) {
     const body = await readBody(req);
     try {
       const saved = writeSketch(String(body.name || ''), normalizeFiles(body.files || []));
-      return sendJson(res, 200, { ok: true, ...saved });
+        return sendJson(res, 200, { ok: true, ...saved });
     } catch (e) { return sendJson(res, 400, { ok: false, error: e?.message || String(e) }); }
   }
   if (req.method === 'POST' && path === '/api/sketches/delete') {
@@ -482,6 +592,9 @@ async function api(req, res, url) {
       return sendJson(res, 200, { ok: true, ...r });
     } catch (e) { return sendJson(res, 400, { ok: false, error: e?.message || String(e) }); }
   }
+
+  // ---------- свои маршруты MicroPIDE ----------
+  if (await extraRoutes(req, res, url, ctx)) return;
 
   // ---------- ИИ-агент ----------
   if (req.method === 'GET' && (path === '/api/agent/status' || path === '/api/ai/status')) {
