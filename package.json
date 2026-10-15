@@ -1,0 +1,46 @@
+{
+  "name": "micro-pide",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MicroPIDE — среда разработки для Arduino: редактор скетчей, компиляция, прошивка, монитор порта. Дизайн и механика (темы, пресеты, автообновление) унаследованы от PSBees (linux_pcb_app).",
+  "author": "danilka-revin",
+  "homepage": "https://github.com/danilka-revin/micro-pide",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danilka-revin/micro-pide.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/write-version.mjs",
+    "preview": "vite preview",
+    "start": "node server/server.mjs",
+    "server": "node server/server.mjs",
+    "test:server": "node test/server.mjs",
+    "test:high": "node test/highlight.mjs",
+    "test": "npm run test:high && npm run test:server"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "optionalDependencies": {
+    "serialport": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "codemirror": "^6.0.1",
+    "@codemirror/lang-cpp": "^6.0.2",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.34.1",
+    "@codemirror/search": "^6.5.6",
+    "@codemirror/commands": "^6.7.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.3.5",
+    "@codemirror/autocomplete": "^6.18.3",
+    "@lezer/highlight": "^1.2.1",
+    "@codemirror/language": "^6.10.8"
+  }
+}

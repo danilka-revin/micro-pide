@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist.old/
+.data/
+.update-cache/
+*.log
+.DS_Store

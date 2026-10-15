@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- MicroPIDE: микросхема с золотыми ножками на графите -->
+  <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="#15181e" stroke="#57471a" stroke-width="1"/>
+  <g stroke="#ffc233" stroke-width="2" stroke-linecap="round">
+    <path d="M8 6.5v3M13 6.5v3M19 6.5v3M24 6.5v3"/>
+    <path d="M8 22.5v3M13 22.5v3M19 22.5v3M24 22.5v3"/>
+    <path d="M6.5 8h3M6.5 13h3M6.5 19h3M6.5 24h3"/>
+    <path d="M22.5 8h3M22.5 13h3M22.5 19h3M22.5 24h3"/>
+  </g>
+  <rect x="10.5" y="10.5" width="11" height="11" rx="2.5" fill="none" stroke="#ffc233" stroke-width="1.8"/>
+  <circle cx="16" cy="16" r="2.2" fill="#ffc233"/>
+</svg>
